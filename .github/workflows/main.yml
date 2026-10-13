@@ -1,4 +1,4 @@
-name: Build and Deploy Warung Medan Unified
+name: Build and Deploy Warung Medan
 
 on:
   push:
@@ -19,10 +19,6 @@ jobs:
   build:
     runs-on: ubuntu-latest
 
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -30,7 +26,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-        node-version: 20
+          node-version: 20
 
       - name: Install dependencies
         run: npm install
@@ -50,5 +46,4 @@ jobs:
           path: dist
 
       - name: Deploy to GitHub Pages
-        id: deployment
         uses: actions/deploy-pages@v4
