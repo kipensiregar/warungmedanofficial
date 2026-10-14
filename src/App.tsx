@@ -6,7 +6,7 @@ import {
   CircleDollarSign, ClipboardList, Cloud, Database, LayoutDashboard,
   LogIn, LogOut, Package, ShieldCheck, ShoppingBasket, Store, Users,
   Pencil, UserPlus, RefreshCw, Ban, CheckCircle2, X, LoaderCircle,
-  Plus, Minus, Trash2, Receipt, ShoppingCart,
+  Plus, Minus, Trash2, Receipt, ShoppingCart, Utensils,
 } from 'lucide-react'
 import { isSupabaseConfigured, supabase } from './lib/supabase'
 
@@ -32,6 +32,7 @@ const navItems = [
   { label: 'Keuangan', icon: CircleDollarSign, roles: ['owner'] },
   { label: 'Laporan', icon: BarChart3, roles: ['owner'] },
   { label: 'Pengguna & Unit', icon: Users, roles: ['owner'] },
+  { label: 'Manajemen Menu', icon: Utensils, roles: ['owner'] },
 ] as const
 
 export default function App() {
@@ -110,6 +111,8 @@ export default function App() {
           ? <Dashboard profile={profile} email={session.user.email || ''} />
           : active === 'Pengguna & Unit' && role === 'owner'
             ? <UsersModule currentUserId={session.user.id} />
+            : active === 'Manajemen Menu' && role === 'owner'
+              ? <MenuManagementModule />
             : active === 'Kasir & Penjualan' && role && ['owner', 'cashier', 'tenant'].includes(role)
               ? <SalesModule profile={profile} />
               : <ModulePlaceholder title={active} role={role} />}
@@ -242,6 +245,197 @@ function UsersModule({ currentUserId }: { currentUserId: string }) {
   </div>
 }
 
+
+
+function MenuManagementModule() {
+  const [items, setItems] = useState<MenuItem[]>([])
+  const [loading, setLoading] = useState(true)
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState('')
+  const [success, setSuccess] = useState('')
+  const [editingId, setEditingId] = useState<string | null>(null)
+  const [name, setName] = useState('')
+  const [category, setCategory] = useState('LAUK')
+  const [priceText, setPriceText] = useState('')
+  const [sku, setSku] = useState('')
+  const [activeStatus, setActiveStatus] = useState(true)
+  const [search, setSearch] = useState('')
+
+  async function loadMenu() {
+    if (!supabase) return
+    setLoading(true)
+    setError('')
+    const { data, error: loadError } = await supabase
+      .from('menu_items')
+      .select('id,sku,name,category,sale_price,is_active')
+      .order('name')
+    if (loadError) setError(`Gagal memuat menu: ${loadError.message}`)
+    else setItems((data || []) as MenuItem[])
+    setLoading(false)
+  }
+
+  useEffect(() => { void loadMenu() }, [])
+
+  function resetForm() {
+    setEditingId(null)
+    setName('')
+    setCategory('LAUK')
+    setPriceText('')
+    setSku('')
+    setActiveStatus(true)
+  }
+
+  function startEdit(item: MenuItem) {
+    setEditingId(item.id)
+    setName(item.name)
+    setCategory(item.category || 'LAINNYA')
+    setPriceText(String(item.sale_price))
+    setSku(item.sku || '')
+    setActiveStatus(item.is_active)
+    setError('')
+    setSuccess('')
+  }
+
+  async function saveMenu(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    if (!supabase) return
+    const parsedPrice = Number(priceText)
+    if (!name.trim()) { setError('Nama menu wajib diisi.'); return }
+    if (!Number.isFinite(parsedPrice) || parsedPrice <= 0) { setError('Harga harus lebih besar dari Rp 0.'); return }
+
+    setSaving(true)
+    setError('')
+    setSuccess('')
+    const payload = {
+      name: name.trim(),
+      category: category.trim() || 'LAINNYA',
+      sale_price: parsedPrice,
+      sku: sku.trim() || null,
+      is_active: activeStatus,
+    }
+    const result = editingId
+      ? await supabase.from('menu_items').update(payload).eq('id', editingId)
+      : await supabase.from('menu_items').insert(payload)
+
+    if (result.error) {
+      setError(`Menu gagal disimpan: ${result.error.message}`)
+      setSaving(false)
+      return
+    }
+    setSuccess(editingId ? 'Menu berhasil diperbarui.' : 'Menu baru berhasil ditambahkan.')
+    resetForm()
+    await loadMenu()
+    setSaving(false)
+  }
+
+  async function toggleMenu(item: MenuItem) {
+    if (!supabase) return
+    const action = item.is_active ? 'menonaktifkan' : 'mengaktifkan'
+    if (!window.confirm(`Yakin ${action} menu "${item.name}"?`)) return
+    setError('')
+    setSuccess('')
+    const { error: updateError } = await supabase
+      .from('menu_items')
+      .update({ is_active: !item.is_active })
+      .eq('id', item.id)
+    if (updateError) setError(`Status menu gagal diubah: ${updateError.message}`)
+    else {
+      setSuccess(`Menu "${item.name}" berhasil ${item.is_active ? 'dinonaktifkan' : 'diaktifkan'}.`)
+      await loadMenu()
+    }
+  }
+
+  const filteredItems = items.filter(item =>
+    `${item.name} ${item.category || ''} ${item.sku || ''}`.toLowerCase().includes(search.toLowerCase())
+  )
+
+  return <div className="users-page">
+    <div className="page-heading">
+      <div>
+        <p className="eyebrow">PENGELOLAAN PRODUK</p>
+        <h1>Manajemen Menu</h1>
+        <p className="muted">Tambah menu, ubah harga, dan atur menu aktif langsung dari aplikasi.</p>
+      </div>
+      <button className="secondary-button" onClick={() => void loadMenu()} disabled={loading}>
+        <RefreshCw size={16} /> Muat ulang
+      </button>
+    </div>
+
+    {error && <div className="form-message users-alert">{error}</div>}
+    {success && <div className="users-success"><CheckCircle2 size={17} />{success}</div>}
+
+    <form className="user-form" onSubmit={saveMenu}>
+      <div className="user-form-heading">
+        <div>
+          <h2>{editingId ? 'Edit menu' : 'Tambah menu baru'}</h2>
+          <p className="muted">Perubahan akan tersimpan ke database dan digunakan pada kasir.</p>
+        </div>
+        {editingId && <button type="button" className="secondary-button" onClick={resetForm}>Batal edit</button>}
+      </div>
+      <div className="user-form-grid">
+        <label className="field">
+          <span>Nama menu</span>
+          <input required maxLength={120} value={name} onChange={e => setName(e.target.value)} placeholder="Contoh: Arsik Ikan Mas" />
+        </label>
+        <label className="field">
+          <span>Kategori</span>
+          <select value={category} onChange={e => setCategory(e.target.value)}>
+            <option value="LAUK">Lauk</option>
+            <option value="MAKANAN">Makanan</option>
+            <option value="MINUM">Minuman</option>
+            <option value="SNACK">Snack</option>
+            <option value="PAKET">Paket</option>
+            <option value="LAINNYA">Lainnya</option>
+          </select>
+        </label>
+        <label className="field">
+          <span>Harga jual (Rp)</span>
+          <input required type="number" min="1" step="1" value={priceText} onChange={e => setPriceText(e.target.value)} placeholder="35000" />
+        </label>
+        <label className="field">
+          <span>Kode menu (opsional)</span>
+          <input maxLength={40} value={sku} onChange={e => setSku(e.target.value)} placeholder="Contoh: LAUK-001" />
+        </label>
+        <label className="field field-check">
+          <input type="checkbox" checked={activeStatus} onChange={e => setActiveStatus(e.target.checked)} />
+          <span>Menu aktif dan tampil di kasir</span>
+        </label>
+      </div>
+      <div className="form-actions">
+        <button className="primary-button" type="submit" disabled={saving}>
+          {saving ? <LoaderCircle size={16} className="spin" /> : editingId ? <Pencil size={16} /> : <Plus size={16} />}
+          {saving ? 'Menyimpan…' : editingId ? 'Simpan perubahan' : 'Tambah menu'}
+        </button>
+        {!editingId && <button type="button" className="secondary-button" onClick={resetForm}>Kosongkan</button>}
+      </div>
+    </form>
+
+    <div className="users-table-wrap">
+      <div className="sales-panel-heading" style={{ padding: '18px 20px' }}>
+        <div><h2>Daftar menu</h2><p className="muted">{items.length} menu · {items.filter(item => item.is_active).length} aktif</p></div>
+        <input className="sales-search" style={{ maxWidth: 300 }} value={search} onChange={e => setSearch(e.target.value)} placeholder="Cari nama/kategori…" aria-label="Cari menu" />
+      </div>
+      {loading ? <div className="users-empty"><LoaderCircle className="spin" size={20} /> Memuat menu…</div>
+        : filteredItems.length === 0 ? <div className="users-empty">Belum ada menu yang cocok.</div>
+        : <table className="users-table">
+          <thead><tr><th>Menu</th><th>Kategori</th><th>Harga</th><th>Status</th><th>Aksi</th></tr></thead>
+          <tbody>{filteredItems.map(item => <tr key={item.id}>
+            <td><strong>{item.name}</strong><small>{item.sku || 'Tanpa kode'}</small></td>
+            <td>{item.category || 'Lainnya'}</td>
+            <td><strong>{money(Number(item.sale_price))}</strong></td>
+            <td><span className={`status-tag ${item.is_active ? 'active' : 'inactive'}`}>{item.is_active ? 'Aktif' : 'Nonaktif'}</span></td>
+            <td><div className="row-actions">
+              <button type="button" className="small-action" onClick={() => startEdit(item)}><Pencil size={14} /> Edit</button>
+              <button type="button" className="small-action" onClick={() => void toggleMenu(item)}>
+                {item.is_active ? <><Ban size={14} /> Nonaktifkan</> : <><CheckCircle2 size={14} /> Aktifkan</>}
+              </button>
+            </div></td>
+          </tr>)}</tbody>
+        </table>}
+    </div>
+    <p className="users-footnote"><ShieldCheck size={15} /> Hanya Owner yang mendapat menu pengelolaan. Menu dinonaktifkan tanpa menghapus riwayat transaksi.</p>
+  </div>
+}
 
 type MenuItem = { id: string; sku: string | null; name: string; category: string | null; sale_price: number; is_active: boolean }
 type SaleCartItem = { menu: MenuItem; quantity: number }
