@@ -6,6 +6,7 @@ import {
   CircleDollarSign, ClipboardList, Cloud, Database, LayoutDashboard,
   LogIn, LogOut, Package, ShieldCheck, ShoppingBasket, Store, Users,
   Pencil, UserPlus, RefreshCw, Ban, CheckCircle2, X, LoaderCircle,
+  Plus, Minus, Trash2, Receipt, ShoppingCart,
 } from 'lucide-react'
 import { isSupabaseConfigured, supabase } from './lib/supabase'
 
@@ -27,7 +28,7 @@ const navItems = [
   { label: 'Dashboard', icon: LayoutDashboard, roles: ['owner', 'cashier', 'tenant', 'kitchen'] },
   { label: 'Kasir & Penjualan', icon: ShoppingBasket, roles: ['owner', 'cashier', 'tenant'] },
   { label: 'Antrean Dapur', icon: ChefHat, roles: ['owner', 'kitchen', 'tenant'] },
-  { label: 'Stok & Resep', icon: Package, roles: ['owner', 'cashier', 'kitchen'] },
+  { label: 'Stok Bahan Baku', icon: Package, roles: ['owner', 'cashier', 'kitchen'] },
   { label: 'Keuangan', icon: CircleDollarSign, roles: ['owner'] },
   { label: 'Laporan', icon: BarChart3, roles: ['owner'] },
   { label: 'Pengguna & Unit', icon: Users, roles: ['owner'] },
@@ -109,7 +110,9 @@ export default function App() {
           ? <Dashboard profile={profile} email={session.user.email || ''} />
           : active === 'Pengguna & Unit' && role === 'owner'
             ? <UsersModule currentUserId={session.user.id} />
-            : <ModulePlaceholder title={active} role={role} />}
+            : active === 'Kasir & Penjualan' && role && ['owner', 'cashier', 'tenant'].includes(role)
+              ? <SalesModule profile={profile} />
+              : <ModulePlaceholder title={active} role={role} />}
         {!profile && <div className="notice warning"><ShieldCheck size={18} /><div><strong>Profil akses belum siap.</strong><p>Jangan gunakan akun ini untuk operasional sampai Owner menetapkan profil dan unit yang benar.</p></div></div>}
       </section>
     </main>
@@ -236,6 +239,174 @@ function UsersModule({ currentUserId }: { currentUserId: string }) {
       </table>}
     </div>
     <p className="users-footnote"><ShieldCheck size={15} /> Penghapusan permanen tidak disediakan agar jejak transaksi tetap terjaga. Jangan menonaktifkan satu-satunya akun Owner.</p>
+  </div>
+}
+
+
+type MenuItem = { id: string; sku: string | null; name: string; category: string | null; sale_price: number; is_active: boolean }
+type SaleCartItem = { menu: MenuItem; quantity: number }
+type SaleUnit = { id: string; code: string; name: string; kind: 'branch' | 'bazaar'; is_active: boolean }
+
+function money(value: number) {
+  return new Intl.NumberFormat('id-ID', { style: 'currency', currency: 'IDR', maximumFractionDigits: 0 }).format(value || 0)
+}
+
+function SalesModule({ profile }: { profile: Profile | null }) {
+  const [menu, setMenu] = useState<MenuItem[]>([])
+  const [units, setUnits] = useState<SaleUnit[]>([])
+  const [selectedUnit, setSelectedUnit] = useState(profile?.unit_id || '')
+  const [cart, setCart] = useState<SaleCartItem[]>([])
+  const [payment, setPayment] = useState<'cash' | 'bank_transfer' | 'qris' | 'debit' | 'other'>('cash')
+  const [discountText, setDiscountText] = useState('0')
+  const [loading, setLoading] = useState(true)
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState('')
+  const [success, setSuccess] = useState('')
+  const [lastReceipt, setLastReceipt] = useState<{ sale_id: string; subtotal?: number; total?: number; status?: string } | null>(null)
+  const [search, setSearch] = useState('')
+
+  const isOwner = profile?.role === 'owner'
+  const discount = Math.max(0, Number(discountText) || 0)
+  const subtotal = cart.reduce((sum, item) => sum + Number(item.menu.sale_price) * item.quantity, 0)
+  const total = Math.max(0, subtotal - discount)
+  const activeUnit = units.find(unit => unit.id === selectedUnit)
+  const visibleMenu = menu.filter(item => `${item.name} ${item.category || ''} ${item.sku || ''}`.toLowerCase().includes(search.toLowerCase()))
+
+  async function loadSalesData() {
+    if (!supabase) return
+    setLoading(true)
+    setError('')
+    const menuPromise = supabase.from('menu_items')
+      .select('id,sku,name,category,sale_price,is_active')
+      .eq('is_active', true)
+      .order('name')
+    const unitsPromise = supabase.from('business_units')
+      .select('id,code,name,kind,is_active')
+      .eq('is_active', true)
+      .order('name')
+    const [menuResult, unitResult] = await Promise.all([menuPromise, unitsPromise])
+    if (menuResult.error) setError(`Gagal memuat menu: ${menuResult.error.message}`)
+    else setMenu((menuResult.data || []) as MenuItem[])
+    if (unitResult.error) setError(prev => [prev, `Gagal memuat unit: ${unitResult.error.message}`].filter(Boolean).join(' · '))
+    else {
+      const loadedUnits = (unitResult.data || []) as SaleUnit[]
+      setUnits(loadedUnits)
+      if (profile?.unit_id) setSelectedUnit(profile.unit_id)
+      else if (!selectedUnit && loadedUnits.length === 1) setSelectedUnit(loadedUnits[0].id)
+    }
+    setLoading(false)
+  }
+
+  useEffect(() => { void loadSalesData() }, [profile?.unit_id])
+
+  function addItem(item: MenuItem) {
+    setCart(current => {
+      const existing = current.find(row => row.menu.id === item.id)
+      return existing
+        ? current.map(row => row.menu.id === item.id ? { ...row, quantity: row.quantity + 1 } : row)
+        : [...current, { menu: item, quantity: 1 }]
+    })
+    setSuccess('')
+    setLastReceipt(null)
+  }
+
+  function changeQuantity(menuId: string, delta: number) {
+    setCart(current => current
+      .map(row => row.menu.id === menuId ? { ...row, quantity: Math.max(0, row.quantity + delta) } : row)
+      .filter(row => row.quantity > 0))
+    setSuccess('')
+    setLastReceipt(null)
+  }
+
+  async function submitSale(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    setError('')
+    setSuccess('')
+    setLastReceipt(null)
+    if (!supabase) return
+    if (!selectedUnit) { setError('Pilih unit penjualan terlebih dahulu.'); return }
+    if (!cart.length) { setError('Keranjang masih kosong.'); return }
+    if (!activeUnit) { setError('Unit penjualan tidak ditemukan atau tidak aktif.'); return }
+    if (discount > subtotal) { setError('Diskon tidak boleh melebihi subtotal.'); return }
+    if (!Number.isFinite(discount) || discount < 0) { setError('Diskon tidak valid.'); return }
+    setSaving(true)
+    const requestId = crypto.randomUUID()
+    const { data, error: rpcError } = await supabase.rpc('post_sale', {
+      p_client_request_id: requestId,
+      p_unit_id: selectedUnit,
+      p_payment_method: payment,
+      p_items: cart.map(row => ({ menu_item_id: row.menu.id, quantity: row.quantity })),
+      p_discount: discount,
+    })
+    if (rpcError) {
+      setError(`Transaksi gagal disimpan: ${rpcError.message}`)
+      setSaving(false)
+      return
+    }
+    const result = data as { sale_id?: string; subtotal?: number; total?: number; status?: string } | null
+    if (!result?.sale_id) {
+      setError('Server tidak mengembalikan nomor transaksi. Periksa riwayat transaksi sebelum mencoba lagi.')
+      setSaving(false)
+      return
+    }
+    setLastReceipt({ sale_id: result.sale_id, subtotal: Number(result.subtotal ?? subtotal), total: Number(result.total ?? total), status: result.status })
+    setSuccess(result.status === 'existing' ? 'Transaksi ini sudah pernah tersimpan.' : 'Transaksi berhasil disimpan.')
+    setCart([])
+    setDiscountText('0')
+    setSaving(false)
+  }
+
+  return <div className="sales-page">
+    <div className="page-heading">
+      <div><p className="eyebrow">TRANSAKSI PENJUALAN</p><h1>Kasir & Penjualan</h1><p className="muted">Pilih menu, masukkan jumlah, lalu simpan transaksi ke database.</p></div>
+      <button className="secondary-button" onClick={() => void loadSalesData()} disabled={loading}><RefreshCw size={16} /> Muat ulang</button>
+    </div>
+    {error && <div className="form-message users-alert">{error}</div>}
+    {success && <div className="users-success"><CheckCircle2 size={17} />{success}</div>}
+    {lastReceipt && <div className="sale-receipt">
+      <div className="receipt-title"><Receipt size={20} /><strong>Transaksi tersimpan</strong></div>
+      <p>Nomor transaksi: <strong>{lastReceipt.sale_id}</strong></p>
+      <div className="receipt-totals"><span>Subtotal <strong>{money(lastReceipt.subtotal || 0)}</strong></span><span>Total dibayar <strong>{money(lastReceipt.total || 0)}</strong></span></div>
+      <button type="button" className="secondary-button" onClick={() => {
+        const text = `WARUNG MEDAN CT CATERING\nBukti transaksi\nNo: ${lastReceipt.sale_id}\nUnit: ${activeUnit?.name || selectedUnit}\nSubtotal: ${money(lastReceipt.subtotal || 0)}\nTotal: ${money(lastReceipt.total || 0)}`
+        const blob = new Blob([text], { type: 'text/plain;charset=utf-8' })
+        const url = URL.createObjectURL(blob)
+        const a = document.createElement('a'); a.href = url; a.download = `struk-${lastReceipt.sale_id}.txt`; a.click()
+        URL.revokeObjectURL(url)
+      }}>Simpan bukti transaksi</button>
+    </div>}
+    <div className="sales-layout">
+      <section className="sales-menu-panel">
+        <div className="sales-panel-heading"><div><h2>Daftar menu</h2><p className="muted">Menu aktif dari database</p></div><span className="phase-pill">{menu.length} menu</span></div>
+        {isOwner && <label className="field sales-unit-field"><span>Unit penjualan</span><select required value={selectedUnit} onChange={e => setSelectedUnit(e.target.value)}><option value="">Pilih cabang atau bazar…</option>{units.map(unit => <option key={unit.id} value={unit.id}>{unit.name} · {unit.kind === 'branch' ? 'Cabang' : 'Bazar'}</option>)}</select></label>}
+        {!isOwner && <div className="sales-unit-pill"><Store size={16} /> Unit: <strong>{units.find(unit => unit.id === profile?.unit_id)?.name || 'Unit akun'}</strong></div>}
+        <input className="sales-search" value={search} onChange={e => setSearch(e.target.value)} placeholder="Cari menu atau kategori…" aria-label="Cari menu" />
+        {loading ? <div className="users-empty"><LoaderCircle className="spin" size={20} /> Memuat menu…</div>
+          : visibleMenu.length === 0 ? <div className="users-empty">{menu.length ? 'Menu tidak ditemukan.' : 'Belum ada menu aktif di database. Tambahkan menu terlebih dahulu.'}</div>
+          : <div className="sales-menu-grid">{visibleMenu.map(item => <article className="sales-menu-card" key={item.id}>
+              <div className="sales-menu-meta">{item.category || 'Menu'}{item.sku ? ` · ${item.sku}` : ''}</div>
+              <h3>{item.name}</h3><strong className="sales-price">{money(Number(item.sale_price))}</strong>
+              <button type="button" className="small-action add-menu-button" onClick={() => addItem(item)}><Plus size={15} /> Tambah</button>
+            </article>)}</div>}
+      </section>
+      <form className="sales-cart-panel" onSubmit={submitSale}>
+        <div className="sales-panel-heading"><div><h2><ShoppingCart size={19} /> Keranjang</h2><p className="muted">{cart.length} jenis menu</p></div></div>
+        {cart.length === 0 ? <div className="sales-cart-empty"><ShoppingCart size={26} /><p>Keranjang masih kosong.</p><span>Pilih menu di sebelah kiri untuk memulai transaksi.</span></div>
+          : <div className="sales-cart-list">{cart.map(row => <div className="sales-cart-row" key={row.menu.id}>
+              <div className="sales-cart-info"><strong>{row.menu.name}</strong><span>{money(Number(row.menu.sale_price))} / item</span><b>{money(Number(row.menu.sale_price) * row.quantity)}</b></div>
+              <div className="sales-quantity"><button type="button" aria-label="Kurangi jumlah" onClick={() => changeQuantity(row.menu.id, -1)}><Minus size={14} /></button><strong>{row.quantity}</strong><button type="button" aria-label="Tambah jumlah" onClick={() => changeQuantity(row.menu.id, 1)}><Plus size={14} /></button><button type="button" className="remove-cart-item" aria-label="Hapus item" onClick={() => setCart(current => current.filter(item => item.menu.id !== row.menu.id))}><Trash2 size={15} /></button></div>
+            </div>)}</div>}
+        <div className="sales-checkout">
+          <label className="field"><span>Diskon (Rp)</span><input type="number" min="0" step="1" value={discountText} onChange={e => setDiscountText(e.target.value)} /></label>
+          <label className="field"><span>Metode pembayaran</span><select value={payment} onChange={e => setPayment(e.target.value as typeof payment)}><option value="cash">Tunai</option><option value="bank_transfer">Transfer bank</option><option value="qris">QRIS</option><option value="debit">Debit</option><option value="other">Lainnya</option></select></label>
+          <div className="sales-total-line"><span>Subtotal</span><strong>{money(subtotal)}</strong></div>
+          <div className="sales-total-line"><span>Diskon</span><strong>− {money(discount)}</strong></div>
+          <div className="sales-grand-total"><span>Total</span><strong>{money(total)}</strong></div>
+          <button className="primary-button sales-submit" type="submit" disabled={saving || loading || !cart.length || !selectedUnit}>{saving ? <LoaderCircle size={17} className="spin" /> : <CheckCircle2 size={17} />}{saving ? 'Menyimpan transaksi…' : 'Simpan transaksi'}</button>
+          <p className="sales-note"><ShieldCheck size={14} /> Stok bahan baku tidak berkurang otomatis dari penjualan.</p>
+        </div>
+      </form>
+    </div>
   </div>
 }
 
