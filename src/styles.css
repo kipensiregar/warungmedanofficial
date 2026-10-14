@@ -100,3 +100,64 @@
   .sales-quantity { align-self: flex-end; }
   .sales-grand-total strong { font-size: 20px; }
 }
+
+/* Hak akses granular - tambahkan ke bagian paling bawah src/styles.css */
+.permission-editor {
+  margin: 18px 0 22px;
+  padding: 22px;
+  border: 1px solid var(--border, #e4e7ec);
+  border-radius: 18px;
+  background: var(--surface, #fff);
+  box-shadow: 0 8px 24px rgba(16, 24, 40, .05);
+}
+.permission-editor-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 18px;
+}
+.permission-editor-heading h2 { margin: 2px 0 6px; font-size: 1.15rem; }
+.permission-editor-heading .muted { margin: 0; }
+.permission-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+.permission-option {
+  display: flex;
+  align-items: flex-start;
+  gap: 11px;
+  padding: 14px;
+  min-width: 0;
+  border: 1px solid var(--border, #e4e7ec);
+  border-radius: 12px;
+  cursor: pointer;
+  background: var(--surface-subtle, #fcfcfd);
+}
+.permission-option:has(input:checked) {
+  border-color: #86b6a3;
+  background: #f1f8f4;
+}
+.permission-option input { width: 17px; height: 17px; flex: 0 0 auto; margin-top: 2px; accent-color: #217653; }
+.permission-copy { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.permission-copy strong { font-size: .92rem; }
+.permission-copy small { color: var(--muted, #667085); line-height: 1.45; }
+.permission-warning {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  margin-top: 16px;
+  padding: 12px 14px;
+  border-radius: 10px;
+  background: #f5f7fa;
+  color: #475467;
+  font-size: .88rem;
+  line-height: 1.5;
+}
+.permission-warning svg { flex: 0 0 auto; margin-top: 1px; }
+@media (max-width: 700px) {
+  .permission-editor { padding: 16px; }
+  .permission-grid { grid-template-columns: minmax(0, 1fr); }
+  .permission-editor-heading { gap: 10px; }
+}
