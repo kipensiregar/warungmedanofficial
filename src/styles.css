@@ -42,3 +42,61 @@
   .users-summary { gap:8px; }
   .users-summary > div { padding:12px; }
 }
+
+
+/* Modul Kasir & Penjualan */
+.sales-page { display: flex; flex-direction: column; gap: 22px; }
+.sales-page .page-heading { align-items: center; }
+.sales-layout { display: grid; grid-template-columns: minmax(0, 1.35fr) minmax(320px, .85fr); gap: 20px; align-items: start; }
+.sales-menu-panel, .sales-cart-panel { min-width: 0; background: #fff; border: 1px solid #e0e9e2; border-radius: 20px; padding: 22px; }
+.sales-cart-panel { position: sticky; top: 18px; }
+.sales-panel-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 18px; }
+.sales-panel-heading h2 { display: flex; align-items: center; gap: 9px; margin: 0 0 5px; font-size: 20px; }
+.sales-panel-heading p { margin: 0; font-size: 13px; }
+.sales-unit-field { display: block; margin-bottom: 15px; }
+.sales-unit-pill { display: flex; align-items: center; gap: 8px; padding: 11px 12px; background: #edf5ef; border-radius: 10px; margin-bottom: 15px; color: #245d43; }
+.sales-search { width: 100%; border: 1px solid #dce5de; border-radius: 10px; padding: 12px 13px; margin-bottom: 15px; font: inherit; box-sizing: border-box; outline-color: #235842; }
+.sales-menu-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.sales-menu-card { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; min-width: 0; border: 1px solid #e4ebe5; border-radius: 13px; padding: 14px; }
+.sales-menu-meta { font-size: 11px; color: #74847a; text-transform: uppercase; letter-spacing: .04em; }
+.sales-menu-card h3 { margin: 0; font-size: 15px; line-height: 1.35; overflow-wrap: anywhere; }
+.sales-price { color: #174b36; font-size: 15px; }
+.add-menu-button { margin-top: auto; }
+.sales-cart-empty { min-height: 160px; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; color: #849087; gap: 8px; }
+.sales-cart-empty p { margin: 0; color: #31483a; font-weight: 600; }
+.sales-cart-empty span { font-size: 13px; max-width: 240px; }
+.sales-cart-list { display: flex; flex-direction: column; }
+.sales-cart-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 0; border-bottom: 1px solid #edf1ed; }
+.sales-cart-info { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.sales-cart-info strong { overflow-wrap: anywhere; }
+.sales-cart-info span { font-size: 12px; color: #758279; }
+.sales-cart-info b { font-size: 13px; color: #245b42; }
+.sales-quantity { display: flex; align-items: center; gap: 7px; flex-shrink: 0; }
+.sales-quantity button { display: inline-flex; align-items: center; justify-content: center; width: 29px; height: 29px; border: 1px solid #dbe5dd; background: #fff; border-radius: 8px; cursor: pointer; color: #234f3b; }
+.sales-quantity button.remove-cart-item { margin-left: 3px; color: #a03d35; }
+.sales-checkout { display: flex; flex-direction: column; gap: 12px; margin-top: 20px; }
+.sales-checkout .field { display: flex; flex-direction: column; gap: 7px; }
+.sales-checkout .field input, .sales-checkout .field select, .sales-unit-field select { width: 100%; min-width: 0; box-sizing: border-box; border: 1px solid #dce5de; border-radius: 10px; padding: 11px 12px; background: white; font: inherit; }
+.sales-total-line, .sales-grand-total { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.sales-total-line { color: #68766c; font-size: 14px; }
+.sales-grand-total { border-top: 1px solid #e4ebe5; margin-top: 4px; padding-top: 15px; color: #163f2e; font-size: 17px; }
+.sales-grand-total strong { font-size: 23px; }
+.sales-submit { width: 100%; justify-content: center; margin-top: 5px; }
+.sales-note { display: flex; gap: 7px; align-items: flex-start; margin: 0; color: #758279; font-size: 12px; line-height: 1.45; }
+.sale-receipt { background: #edf7ef; border: 1px solid #cce7d2; border-radius: 15px; padding: 18px; color: #20563c; }
+.receipt-title { display: flex; align-items: center; gap: 8px; font-size: 17px; }
+.sale-receipt p { overflow-wrap: anywhere; }
+.receipt-totals { display: flex; flex-wrap: wrap; gap: 20px; margin: 14px 0; }
+.receipt-totals span { display: flex; flex-direction: column; gap: 4px; color: #63766a; font-size: 12px; }
+.receipt-totals strong { color: #174b36; font-size: 17px; }
+@media (max-width: 1000px) {
+  .sales-layout { grid-template-columns: minmax(0, 1fr); }
+  .sales-cart-panel { position: static; }
+}
+@media (max-width: 560px) {
+  .sales-menu-panel, .sales-cart-panel { padding: 15px; border-radius: 15px; }
+  .sales-menu-grid { grid-template-columns: minmax(0, 1fr); }
+  .sales-cart-row { align-items: flex-start; flex-direction: column; }
+  .sales-quantity { align-self: flex-end; }
+  .sales-grand-total strong { font-size: 20px; }
+}
