@@ -34,6 +34,7 @@ const permissionFields: { key: keyof AppPermissions; label: string; description:
   { key: 'users_manage', label: 'Kelola pengguna', description: 'Mengelola akses pengguna; tetap dibatasi kebijakan Owner.' },
 ]
 const defaultPermissions: AppPermissions = { stock_view: true, stock_receive: false, stock_issue: false, ingredient_manage: false, sales_create: false, reports_view: false, users_manage: false }
+const deniedPermissions: AppPermissions = { stock_view: false, stock_receive: false, stock_issue: false, ingredient_manage: false, sales_create: false, reports_view: false, users_manage: false }
 
 const roleLabels: Record<Role, string> = {
   owner: 'Owner', cashier: 'Kasir Cabang', tenant: 'Tim Tenant', kitchen: 'Tim Dapur',
@@ -129,6 +130,8 @@ export default function App() {
               ? <MenuManagementModule />
             : active === 'Kasir & Penjualan' && role && ['owner', 'cashier', 'tenant'].includes(role)
               ? <SalesModule profile={profile} />
+            : active === 'Stok Bahan Baku' && role && ['owner', 'cashier', 'kitchen'].includes(role)
+              ? <StockModule profile={profile} currentUserId={session.user.id} />
               : <ModulePlaceholder title={active} role={role} />}
         {!profile && <div className="notice warning"><ShieldCheck size={18} /><div><strong>Profil akses belum siap.</strong><p>Jangan gunakan akun ini untuk operasional sampai Owner menetapkan profil dan unit yang benar.</p></div></div>}
       </section>
@@ -494,6 +497,292 @@ function MenuManagementModule() {
     <p className="users-footnote"><ShieldCheck size={15} /> Hanya Owner yang mendapat menu pengelolaan. Menu dinonaktifkan tanpa menghapus riwayat transaksi.</p>
   </div>
 }
+
+type Ingredient = {
+  id: string
+  code: string | null
+  name: string
+  base_unit: string
+  reorder_level: number
+  is_active: boolean
+}
+type StockUnit = { id: string; code: string; name: string; kind: 'branch' | 'bazaar'; is_active: boolean }
+type StockBalance = { unit_id: string; ingredient_id: string; quantity: number; average_unit_cost: number }
+type StockMovement = {
+  id: string; unit_id: string; ingredient_id: string; kind: string
+  quantity_delta: number; unit_cost: number; note: string | null; created_at: string
+}
+
+function movementLabel(kind: string) {
+  const labels: Record<string, string> = {
+    opening: 'Stok awal', purchase: 'Stok masuk/pembelian', manual_in: 'Penambahan manual',
+    manual_out: 'Pengeluaran manual', transfer_in: 'Transfer masuk',
+    transfer_out: 'Transfer keluar', stocktake_adjustment: 'Penyesuaian stok',
+    sale_reversal: 'Pembatalan pemakaian',
+  }
+  return labels[kind] || kind
+}
+function quantity(value: number, digits = 3) {
+  return new Intl.NumberFormat('id-ID', { maximumFractionDigits: digits }).format(Number(value) || 0)
+}
+
+function StockModule({ profile, currentUserId }: { profile: Profile | null; currentUserId: string }) {
+  const isOwner = profile?.role === 'owner'
+  const [permissions, setPermissions] = useState<AppPermissions>(isOwner ? { stock_view: true, stock_receive: true, stock_issue: true, ingredient_manage: true, sales_create: true, reports_view: true, users_manage: true } : deniedPermissions)
+  const [permissionLoading, setPermissionLoading] = useState(!isOwner)
+  const canView = isOwner || permissions.stock_view
+  const canReceive = isOwner || permissions.stock_receive
+  const canIssue = isOwner || permissions.stock_issue
+  const canManageIngredients = isOwner || permissions.ingredient_manage
+  const [ingredients, setIngredients] = useState<Ingredient[]>([])
+  const [units, setUnits] = useState<StockUnit[]>([])
+  const [balances, setBalances] = useState<StockBalance[]>([])
+  const [movements, setMovements] = useState<StockMovement[]>([])
+  const [selectedUnit, setSelectedUnit] = useState(profile?.unit_id || '')
+  const [loading, setLoading] = useState(true)
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState('')
+  const [success, setSuccess] = useState('')
+  const [search, setSearch] = useState('')
+  const [showIngredientForm, setShowIngredientForm] = useState(false)
+  const [editingIngredient, setEditingIngredient] = useState<Ingredient | null>(null)
+  const [ingredientName, setIngredientName] = useState('')
+  const [ingredientCode, setIngredientCode] = useState('')
+  const [baseUnit, setBaseUnit] = useState('kg')
+  const [reorderLevel, setReorderLevel] = useState('0')
+  const [ingredientActive, setIngredientActive] = useState(true)
+  const [movementType, setMovementType] = useState<'in' | 'out'>('in')
+  const [movementIngredient, setMovementIngredient] = useState('')
+  const [movementQuantity, setMovementQuantity] = useState('')
+  const [unitCost, setUnitCost] = useState('')
+  const [movementNote, setMovementNote] = useState('')
+
+  useEffect(() => {
+    let alive = true
+    async function loadPermissions() {
+      if (isOwner) { setPermissions({ stock_view: true, stock_receive: true, stock_issue: true, ingredient_manage: true, sales_create: true, reports_view: true, users_manage: true }); setPermissionLoading(false); return }
+      if (!supabase) { setPermissionLoading(false); return }
+      setPermissionLoading(true)
+      const { data, error: permissionError } = await supabase.from('user_permissions')
+        .select('stock_view,stock_receive,stock_issue,ingredient_manage,sales_create,reports_view,users_manage')
+        .eq('user_id', currentUserId).maybeSingle()
+      if (!alive) return
+      if (permissionError) {
+        setPermissions(deniedPermissions)
+        setError(`Gagal memuat hak akses stok: ${permissionError.message}`)
+      } else if (data) setPermissions(data as AppPermissions)
+      else setPermissions(deniedPermissions)
+      setPermissionLoading(false)
+    }
+    void loadPermissions()
+    return () => { alive = false }
+  }, [isOwner, currentUserId])
+
+  useEffect(() => {
+    if (!canReceive && canIssue) setMovementType('out')
+    else if (canReceive && !canIssue) setMovementType('in')
+  }, [canReceive, canIssue])
+
+  async function loadStock() {
+    if (!supabase) return
+    setLoading(true)
+    setError('')
+    const [ingredientResult, unitResult] = await Promise.all([
+      supabase.from('ingredients').select('id,code,name,base_unit,reorder_level,is_active').order('name'),
+      supabase.from('business_units').select('id,code,name,kind,is_active').eq('is_active', true).order('name'),
+    ])
+    if (ingredientResult.error) setError(`Gagal memuat bahan: ${ingredientResult.error.message}`)
+    else setIngredients((ingredientResult.data || []) as Ingredient[])
+    if (unitResult.error) setError(prev => [prev, `Gagal memuat unit: ${unitResult.error.message}`].filter(Boolean).join(' · '))
+    else {
+      const loadedUnits = (unitResult.data || []) as StockUnit[]
+      setUnits(loadedUnits)
+      if (profile?.unit_id) setSelectedUnit(profile.unit_id)
+      else if (!selectedUnit && loadedUnits.length) setSelectedUnit(loadedUnits[0].id)
+    }
+    setLoading(false)
+  }
+
+  async function loadUnitStock(unitId: string) {
+    if (!supabase || !unitId) { setBalances([]); setMovements([]); return }
+    const [balanceResult, movementResult] = await Promise.all([
+      supabase.from('inventory_balances').select('unit_id,ingredient_id,quantity,average_unit_cost').eq('unit_id', unitId),
+      supabase.from('inventory_movements').select('id,unit_id,ingredient_id,kind,quantity_delta,unit_cost,note,created_at').eq('unit_id', unitId).order('created_at', { ascending: false }).limit(40),
+    ])
+    if (balanceResult.error) setError(prev => [prev, `Gagal memuat saldo: ${balanceResult.error.message}`].filter(Boolean).join(' · '))
+    else setBalances((balanceResult.data || []) as StockBalance[])
+    if (movementResult.error) setError(prev => [prev, `Gagal memuat riwayat: ${movementResult.error.message}`].filter(Boolean).join(' · '))
+    else setMovements((movementResult.data || []) as StockMovement[])
+  }
+
+  useEffect(() => { if (canView) void loadStock(); else setLoading(false) }, [profile?.unit_id, canView])
+  useEffect(() => { if (canView && selectedUnit) void loadUnitStock(selectedUnit) }, [selectedUnit, canView])
+
+  function resetIngredientForm() {
+    setShowIngredientForm(false); setEditingIngredient(null); setIngredientName('')
+    setIngredientCode(''); setBaseUnit('kg'); setReorderLevel('0'); setIngredientActive(true)
+  }
+  function editIngredient(item: Ingredient) {
+    setEditingIngredient(item); setShowIngredientForm(true); setIngredientName(item.name)
+    setIngredientCode(item.code || ''); setBaseUnit(item.base_unit); setReorderLevel(String(item.reorder_level))
+    setIngredientActive(item.is_active); setError(''); setSuccess('')
+  }
+
+  async function saveIngredient(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    if (!supabase || !canManageIngredients) return
+    const level = Number(reorderLevel)
+    if (!ingredientName.trim() || !baseUnit.trim()) { setError('Nama bahan dan satuan wajib diisi.'); return }
+    if (!Number.isFinite(level) || level < 0) { setError('Batas minimum stok tidak valid.'); return }
+    setSaving(true); setError(''); setSuccess('')
+    const payload = {
+      name: ingredientName.trim(), code: ingredientCode.trim() || null,
+      base_unit: baseUnit.trim(), reorder_level: level, is_active: ingredientActive,
+    }
+    const result = editingIngredient
+      ? await supabase.from('ingredients').update(payload).eq('id', editingIngredient.id)
+      : await supabase.from('ingredients').insert(payload)
+    if (result.error) setError(`Bahan gagal disimpan: ${result.error.message}`)
+    else {
+      setSuccess(editingIngredient ? 'Bahan baku berhasil diperbarui.' : 'Bahan baku berhasil ditambahkan.')
+      resetIngredientForm()
+      await loadStock()
+    }
+    setSaving(false)
+  }
+
+  async function toggleIngredient(item: Ingredient) {
+    if (!supabase || !canManageIngredients) return
+    if (!window.confirm(`Yakin ${item.is_active ? 'menonaktifkan' : 'mengaktifkan'} bahan "${item.name}"?`)) return
+    setError(''); setSuccess('')
+    const { error: updateError } = await supabase.from('ingredients').update({ is_active: !item.is_active }).eq('id', item.id)
+    if (updateError) setError(`Status bahan gagal diubah: ${updateError.message}`)
+    else { setSuccess(`Bahan "${item.name}" berhasil ${item.is_active ? 'dinonaktifkan' : 'diaktifkan'}.`); await loadStock() }
+  }
+
+  async function postMovement(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    if (!supabase) return
+    if (movementType === 'in' && !canReceive) { setError('Akun ini tidak memiliki izin stok masuk.'); return }
+    if (movementType === 'out' && !canIssue) { setError('Akun ini tidak memiliki izin stok keluar.'); return }
+    const qty = Number(movementQuantity)
+    const cost = movementType === 'in' ? Number(unitCost || 0) : 0
+    if (!selectedUnit) { setError('Pilih unit stok terlebih dahulu.'); return }
+    if (!movementIngredient) { setError('Pilih bahan baku.'); return }
+    if (!Number.isFinite(qty) || qty <= 0) { setError('Jumlah harus lebih besar dari nol.'); return }
+    if (movementType === 'out' && !movementNote.trim()) { setError('Alasan stok keluar wajib diisi.'); return }
+    if (movementType === 'in' && (!Number.isFinite(cost) || cost < 0)) { setError('Harga beli per satuan tidak valid.'); return }
+    setSaving(true); setError(''); setSuccess('')
+    const requestId = crypto.randomUUID()
+    const result = movementType === 'in'
+      ? await supabase.rpc('receive_stock', {
+          p_unit_id: selectedUnit, p_ingredient_id: movementIngredient,
+          p_quantity: qty, p_unit_cost: cost, p_note: movementNote.trim() || null, p_request_id: requestId,
+        })
+      : await supabase.rpc('issue_stock', {
+          p_unit_id: selectedUnit, p_ingredient_id: movementIngredient,
+          p_quantity: qty, p_note: movementNote.trim(), p_request_id: requestId,
+        })
+    if (result.error) setError(`Stok gagal disimpan: ${result.error.message}`)
+    else {
+      setSuccess(movementType === 'in' ? 'Stok masuk berhasil dicatat.' : 'Stok keluar berhasil dicatat.')
+      setMovementQuantity(''); setUnitCost(''); setMovementNote('')
+      await loadUnitStock(selectedUnit)
+    }
+    setSaving(false)
+  }
+
+  const filteredIngredients = ingredients.filter(item =>
+    `${item.name} ${item.code || ''} ${item.base_unit}`.toLowerCase().includes(search.toLowerCase()))
+  const selectedUnitInfo = units.find(unit => unit.id === selectedUnit)
+  const balanceFor = (ingredientId: string) => balances.find(balance => balance.ingredient_id === ingredientId)
+  const activeIngredients = ingredients.filter(item => item.is_active)
+
+  if (permissionLoading) return <div className="placeholder-card"><LoaderCircle className="spin" size={22} /><h1>Memeriksa hak akses stok…</h1></div>
+  if (!canView) return <div className="placeholder-card"><div className="module-icon"><ShieldCheck size={23} /></div><p className="eyebrow">AKSES TERBATAS</p><h1>Stok Bahan Baku</h1><p className="muted">Akun ini belum diberi izin untuk melihat stok. Hubungi Owner jika akses diperlukan.</p></div>
+
+  return <div className="users-page">
+    <div className="page-heading">
+      <div><p className="eyebrow">PERSEDIAAN OPERASIONAL</p><h1>Stok Bahan Baku</h1><p className="muted">Kelola bahan, catat stok masuk dan keluar secara manual, serta pantau saldo per unit.</p></div>
+      <button type="button" className="secondary-button" onClick={async () => { await loadStock(); await loadUnitStock(selectedUnit) }} disabled={loading}><RefreshCw size={16} /> Muat ulang</button>
+    </div>
+    {error && <div className="form-message users-alert">{error}</div>}
+    {success && <div className="users-success"><CheckCircle2 size={17} />{success}</div>}
+
+    <section className="user-form">
+      <div className="user-form-heading"><div><h2>Saldo per unit</h2><p className="muted">Pilih lokasi persediaan yang ingin diperiksa.</p></div></div>
+      <label className="field sales-unit-field"><span>Unit stok</span>
+        <select value={selectedUnit} disabled={!isOwner} onChange={e => setSelectedUnit(e.target.value)}>
+          <option value="">Pilih unit…</option>
+          {units.filter(unit => isOwner || unit.id === profile?.unit_id).map(unit => <option key={unit.id} value={unit.id}>{unit.name} · {unit.kind === 'branch' ? 'Cabang' : 'Bazar'}</option>)}
+        </select>
+      </label>
+      {!isOwner && <p className="users-footnote">Akses stok dibatasi pada unit yang ditetapkan untuk akun ini.</p>}
+    </section>
+
+    {(canReceive || canIssue) && <form className="user-form" onSubmit={postMovement}>
+      <div className="user-form-heading"><div><h2>Catat pergerakan stok</h2><p className="muted">Stok tidak berkurang otomatis saat menu terjual.</p></div></div>
+      <div className="user-form-grid">
+        <label className="field"><span>Jenis transaksi</span><select value={movementType} onChange={e => setMovementType(e.target.value as 'in' | 'out')}><>{canReceive && <option value="in">Stok masuk / pembelian</option>}{canIssue && <option value="out">Stok keluar manual</option>}</></select></label>
+        <label className="field"><span>Bahan baku</span><select required value={movementIngredient} onChange={e => setMovementIngredient(e.target.value)}><option value="">Pilih bahan…</option>{activeIngredients.map(item => <option key={item.id} value={item.id}>{item.name} ({item.base_unit})</option>)}</select></label>
+        <label className="field"><span>Jumlah ({activeIngredients.find(item => item.id === movementIngredient)?.base_unit || 'satuan'})</span><input required type="number" min="0.0001" step="0.0001" value={movementQuantity} onChange={e => setMovementQuantity(e.target.value)} placeholder="Contoh: 5" /></label>
+        {movementType === 'in' && <label className="field"><span>Harga beli per satuan (Rp)</span><input type="number" min="0" step="1" value={unitCost} onChange={e => setUnitCost(e.target.value)} placeholder="Opsional, isi 0 jika tidak diketahui" /></label>}
+        <label className="field"><span>{movementType === 'in' ? 'Catatan (opsional)' : 'Alasan stok keluar (wajib)'}</span><input value={movementNote} onChange={e => setMovementNote(e.target.value)} required={movementType === 'out'} placeholder={movementType === 'in' ? 'Contoh: pembelian dari pemasok' : 'Contoh: bahan rusak / pemakaian dapur'} /></label>
+      </div>
+      <div className="form-actions"><button className="primary-button" type="submit" disabled={saving || loading || !selectedUnit || !activeIngredients.length}>{saving ? <LoaderCircle size={16} className="spin" /> : <CheckCircle2 size={16} />}{saving ? 'Menyimpan…' : movementType === 'in' ? 'Simpan stok masuk' : 'Simpan stok keluar'}</button></div>
+    </form>}
+
+    {canManageIngredients && <form className="user-form" onSubmit={saveIngredient}>
+      <div className="user-form-heading"><div><h2>{editingIngredient ? 'Edit bahan baku' : 'Tambah bahan baku'}</h2><p className="muted">Master bahan dikelola Owner dan tersedia untuk semua unit.</p></div>{editingIngredient && <button type="button" className="secondary-button" onClick={resetIngredientForm}>Batal edit</button>}</div>
+      <div className="user-form-grid">
+        <label className="field"><span>Nama bahan</span><input required maxLength={120} value={ingredientName} onChange={e => setIngredientName(e.target.value)} placeholder="Contoh: Beras" /></label>
+        <label className="field"><span>Kode bahan (opsional)</span><input maxLength={40} value={ingredientCode} onChange={e => setIngredientCode(e.target.value)} placeholder="Contoh: BB-001" /></label>
+        <label className="field"><span>Satuan dasar</span><select value={baseUnit} onChange={e => setBaseUnit(e.target.value)}><option value="kg">Kilogram (kg)</option><option value="gram">Gram</option><option value="liter">Liter</option><option value="ml">Mililiter (ml)</option><option value="pcs">Buah / pcs</option><option value="ikat">Ikat</option><option value="pack">Pack</option><option value="dus">Dus</option></select></label>
+        <label className="field"><span>Batas minimum stok</span><input required type="number" min="0" step="0.001" value={reorderLevel} onChange={e => setReorderLevel(e.target.value)} /></label>
+        {editingIngredient && <label className="field field-check"><input type="checkbox" checked={ingredientActive} onChange={e => setIngredientActive(e.target.checked)} /><span>Bahan aktif</span></label>}
+      </div>
+      <div className="form-actions"><button className="primary-button" type="submit" disabled={saving}>{saving ? <LoaderCircle size={16} className="spin" /> : editingIngredient ? <Pencil size={16} /> : <Plus size={16} />}{saving ? 'Menyimpan…' : editingIngredient ? 'Simpan perubahan' : 'Tambah bahan'}</button><button type="button" className="secondary-button" onClick={resetIngredientForm}>Kosongkan</button></div>
+    </form>}
+
+    <div className="users-table-wrap">
+      <div className="sales-panel-heading" style={{ padding: '18px 20px' }}>
+        <div><h2>Daftar bahan dan saldo</h2><p className="muted">{ingredients.length} bahan · {activeIngredients.length} aktif</p></div>
+        <input className="sales-search" style={{ maxWidth: 300 }} value={search} onChange={e => setSearch(e.target.value)} placeholder="Cari nama/kode bahan…" aria-label="Cari bahan" />
+      </div>
+      {loading ? <div className="users-empty"><LoaderCircle className="spin" size={20} /> Memuat stok…</div>
+        : filteredIngredients.length === 0 ? <div className="users-empty">Belum ada bahan baku. Owner dapat menambahkan bahan di formulir atas.</div>
+        : <table className="users-table"><thead><tr><th>Bahan</th><th>Satuan</th><th>Saldo unit terpilih</th><th>Minimum</th><th>Status</th>{canManageIngredients && <th>Aksi</th>}</tr></thead>
+          <tbody>{filteredIngredients.map(item => {
+            const balance = balanceFor(item.id)
+            const qty = Number(balance?.quantity || 0)
+            const low = item.is_active && qty <= Number(item.reorder_level)
+            return <tr key={item.id}>
+              <td><strong>{item.name}</strong><small>{item.code || 'Tanpa kode'}</small></td>
+              <td>{item.base_unit}</td>
+              <td><strong>{quantity(qty)} {item.base_unit}</strong>{balance && Number(balance.average_unit_cost) > 0 && <small>Rata-rata {money(Number(balance.average_unit_cost))}/{item.base_unit}</small>}</td>
+              <td>{quantity(Number(item.reorder_level))} {item.base_unit}</td>
+              <td><span className={`status-tag ${!item.is_active ? 'inactive' : low ? 'inactive' : 'active'}`}>{!item.is_active ? 'Nonaktif' : low ? 'Stok rendah' : 'Aktif'}</span></td>
+              {canManageIngredients && <td><div className="row-actions"><button type="button" className="small-action" onClick={() => editIngredient(item)}><Pencil size={14} /> Edit</button><button type="button" className="small-action" onClick={() => void toggleIngredient(item)}>{item.is_active ? <><Ban size={14} /> Nonaktifkan</> : <><CheckCircle2 size={14} /> Aktifkan</>}</button></div></td>}
+            </tr>
+          })}</tbody>
+        </table>}
+    </div>
+
+    <div className="users-table-wrap">
+      <div className="sales-panel-heading" style={{ padding: '18px 20px' }}><div><h2>Riwayat pergerakan stok</h2><p className="muted">40 catatan terbaru untuk {selectedUnitInfo?.name || 'unit terpilih'}.</p></div></div>
+      {!selectedUnit ? <div className="users-empty">Pilih unit untuk melihat riwayat.</div>
+        : movements.length === 0 ? <div className="users-empty">Belum ada riwayat stok untuk unit ini.</div>
+        : <table className="users-table"><thead><tr><th>Waktu</th><th>Bahan</th><th>Jenis</th><th>Perubahan</th><th>Catatan</th></tr></thead>
+          <tbody>{movements.map(move => {
+            const item = ingredients.find(i => i.id === move.ingredient_id)
+            return <tr key={move.id}><td>{new Date(move.created_at).toLocaleString('id-ID')}</td><td><strong>{item?.name || 'Bahan tidak ditemukan'}</strong></td><td>{movementLabel(move.kind)}</td><td><strong>{Number(move.quantity_delta) > 0 ? '+' : ''}{quantity(Number(move.quantity_delta))} {item?.base_unit || ''}</strong></td><td>{move.note || '—'}</td></tr>
+          })}</tbody>
+        </table>}
+    </div>
+    <p className="users-footnote"><ShieldCheck size={15} /> Penjualan tidak mengurangi stok otomatis. Pengeluaran stok wajib memiliki alasan dan saldo tidak boleh negatif.</p>
+  </div>
+}
+
 
 type MenuItem = { id: string; sku: string | null; name: string; category: string | null; sale_price: number; is_active: boolean }
 type SaleCartItem = { menu: MenuItem; quantity: number }
