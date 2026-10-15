@@ -6,7 +6,7 @@ import {
   CircleDollarSign, ClipboardList, Cloud, Database, LayoutDashboard,
   LogIn, LogOut, Package, ShieldCheck, ShoppingBasket, Store, Users,
   Pencil, UserPlus, RefreshCw, Ban, CheckCircle2, X, LoaderCircle,
-  Plus, Minus, Trash2, Receipt, ShoppingCart, Utensils,
+  Plus, Minus, Trash2, Receipt, ShoppingCart, Utensils, ClipboardCheck,
 } from 'lucide-react'
 import { isSupabaseConfigured, supabase } from './lib/supabase'
 
@@ -44,6 +44,7 @@ const navItems = [
   { label: 'Kasir & Penjualan', icon: ShoppingBasket, roles: ['owner', 'cashier', 'tenant'] },
   { label: 'Antrean Dapur', icon: ChefHat, roles: ['owner', 'kitchen', 'tenant'] },
   { label: 'Stok Bahan Baku', icon: Package, roles: ['owner', 'cashier', 'kitchen'] },
+  { label: 'Stok Opname & Audit', icon: ClipboardCheck, roles: ['owner', 'cashier', 'tenant', 'kitchen'] },
   { label: 'Keuangan', icon: CircleDollarSign, roles: ['owner'] },
   { label: 'Laporan', icon: BarChart3, roles: ['owner'] },
   { label: 'Pengguna & Unit', icon: Users, roles: ['owner'] },
@@ -132,6 +133,8 @@ export default function App() {
               ? <SalesModule profile={profile} />
             : active === 'Stok Bahan Baku' && role && ['owner', 'cashier', 'kitchen'].includes(role)
               ? <StockModule profile={profile} currentUserId={session.user.id} />
+              : active === 'Stok Opname & Audit' && role
+                ? <StocktakeModule profile={profile} currentUserId={session.user.id} />
               : active === 'Laporan' && role === 'owner'
                 ? <StockReportsModule />
                 : <ModulePlaceholder title={active} role={role} />}
@@ -511,6 +514,7 @@ type Ingredient = {
   is_active: boolean
 }
 type StockUnit = { id: string; code: string; name: string; kind: 'branch' | 'bazaar'; is_active: boolean }
+type IngredientUnitOption = { ingredient_id: string; unit_name: string; factor_to_base: number; is_active: boolean }
 type StockBalance = { unit_id: string; ingredient_id: string; quantity: number; average_unit_cost: number }
 type StockMovement = {
   id: string; unit_id: string; ingredient_id: string; kind: string
@@ -987,6 +991,214 @@ function Dashboard({ profile, email }: { profile: Profile | null; email: string 
     { title: 'Laporan', description: 'Per unit dan konsolidasi usaha.', icon: BarChart3, status: role === 'owner' ? 'Khusus Owner' : 'Akses dibatasi' },
     { title: 'Penerimaan stok', description: 'Catat bahan masuk per unit.', icon: ArrowDownToLine, status: 'Dalam pengembangan' },
   ].filter(m => role === 'owner' || !['Keuangan', 'Laporan'].includes(m.title)).map(m => <article className="module-card" key={m.title}><div className="module-icon"><m.icon size={20} /></div><h3>{m.title}</h3><p>{m.description}</p><span className="module-status">{m.status}</span></article>)}</div><div className="next-step"><div className="next-icon"><Database size={20} /></div><div><strong>Fondasi database sudah disiapkan.</strong><p>Modul operasional akan diaktifkan bertahap setelah pengujian akses dan alur transaksi.</p></div><ClipboardList className="next-arrow" size={20} /></div></>
+}
+
+
+type StocktakeDraftItem = { ingredient_id: string; input_quantity: string; input_unit: string }
+
+type StocktakeHeader = {
+  id: string; unit_id: string; status: 'pending' | 'approved' | 'rejected' | 'stale';
+  notes: string | null; submitted_at: string; submitted_by: string;
+  reviewed_at: string | null; review_note: string | null;
+}
+type StocktakeItemRow = {
+  id: string; stocktake_id: string; ingredient_id: string;
+  system_quantity: number; counted_base_quantity: number; variance_quantity: number;
+  base_unit: string; input_quantity: number; input_unit: string; conversion_factor: number;
+}
+
+function StocktakeModule({ profile, currentUserId }: { profile: Profile | null; currentUserId: string }) {
+  const isOwner = profile?.role === 'owner'
+  const [units, setUnits] = useState<StockUnit[]>([])
+  const [ingredients, setIngredients] = useState<Ingredient[]>([])
+  const [ingredientUnits, setIngredientUnits] = useState<IngredientUnitOption[]>([])
+  const [unitId, setUnitId] = useState(profile?.unit_id || '')
+  const [draft, setDraft] = useState<Record<string, StocktakeDraftItem>>({})
+  const [notes, setNotes] = useState('')
+  const [headers, setHeaders] = useState<StocktakeHeader[]>([])
+  const [detail, setDetail] = useState<StocktakeHeader | null>(null)
+  const [detailItems, setDetailItems] = useState<StocktakeItemRow[]>([])
+  const [reviewNote, setReviewNote] = useState('')
+  const [loading, setLoading] = useState(true)
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState('')
+  const [success, setSuccess] = useState('')
+
+  async function loadData() {
+    if (!supabase) return
+    setLoading(true); setError('')
+    const [u, i, iu, h] = await Promise.all([
+      supabase.from('business_units').select('id,code,name,kind,is_active').eq('is_active', true).order('name'),
+      supabase.from('ingredients').select('id,code,name,base_unit,alternate_unit,alternate_factor,reorder_level,is_active').eq('is_active', true).order('name'),
+      supabase.from('ingredient_units').select('ingredient_id,unit_name,factor_to_base,is_active').eq('is_active', true).order('unit_name'),
+      supabase.from('stocktakes').select('id,unit_id,status,notes,submitted_at,submitted_by,reviewed_at,review_note').order('submitted_at', { ascending: false }).limit(100),
+    ])
+    if (u.error) setError(`Gagal memuat unit: ${u.error.message}`)
+    else {
+      const allUnits = (u.data || []) as StockUnit[]
+      setUnits(allUnits)
+      if (profile?.unit_id) setUnitId(profile.unit_id)
+      else if (!unitId && allUnits.length) setUnitId(allUnits[0].id)
+    }
+    if (i.error) setError(prev => [prev, `Gagal memuat bahan: ${i.error.message}`].filter(Boolean).join(' · '))
+    else {
+      const list = (i.data || []) as Ingredient[]
+      setIngredients(list)
+      setDraft(prev => {
+        const next = { ...prev }
+        for (const item of list) if (!next[item.id]) next[item.id] = { ingredient_id: item.id, input_quantity: '', input_unit: item.base_unit }
+        return next
+      })
+    }
+    if (iu.error) setError(prev => [prev, `Gagal memuat satuan konversi: ${iu.error.message}`].filter(Boolean).join(' · '))
+    else setIngredientUnits((iu.data || []) as IngredientUnitOption[])
+    if (h.error) setError(prev => [prev, `Gagal memuat pengajuan opname: ${h.error.message}`].filter(Boolean).join(' · '))
+    else setHeaders((h.data || []) as StocktakeHeader[])
+    setLoading(false)
+  }
+
+  useEffect(() => { void loadData() }, [currentUserId])
+
+  async function openDetail(header: StocktakeHeader) {
+    if (!supabase) return
+    setError(''); setSuccess(''); setDetail(header); setReviewNote('')
+    const { data, error: e } = await supabase.from('stocktake_items')
+      .select('id,stocktake_id,ingredient_id,system_quantity,counted_base_quantity,variance_quantity,base_unit,input_quantity,input_unit,conversion_factor')
+      .eq('stocktake_id', header.id).order('created_at')
+    if (e) { setError(`Gagal memuat rincian opname: ${e.message}`); setDetailItems([]) }
+    else setDetailItems((data || []) as StocktakeItemRow[])
+  }
+
+  async function submitOpname(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    if (!supabase || !unitId) return
+    const items = ingredients.flatMap(item => {
+      const row = draft[item.id]
+      if (!row || row.input_quantity.trim() === '') return []
+      const inputQty = Number(row.input_quantity)
+      const inputUnit = row.input_unit || item.base_unit
+      const factor = Number(ingredientUnits.find(unit => unit.ingredient_id === item.id && unit.unit_name.toLowerCase() === inputUnit.toLowerCase())?.factor_to_base || 0)
+      if (!Number.isFinite(inputQty) || inputQty < 0 || !Number.isFinite(factor) || factor <= 0) return []
+      return [{ ingredient_id: item.id, input_quantity: inputQty, input_unit: inputUnit, conversion_factor: factor, base_unit: item.base_unit }]
+    })
+    if (!items.length) { setError('Isi jumlah fisik minimal satu bahan. Gunakan 0 jika stok fisiknya benar-benar kosong.'); return }
+    const invalid = items.find(x => !Number.isFinite(x.input_quantity) || x.input_quantity < 0 || x.conversion_factor <= 0)
+    if (invalid) { setError('Jumlah atau konversi tidak valid.'); return }
+    setSaving(true); setError(''); setSuccess('')
+    const { data, error: e } = await supabase.rpc('submit_stocktake', {
+      p_unit_id: unitId, p_items: items, p_notes: notes.trim() || null,
+    })
+    if (e) setError(`Pengajuan opname gagal: ${e.message}`)
+    else {
+      setSuccess(`Pengajuan opname berhasil dibuat (${String(data).slice(0, 8)}…). Saldo belum berubah sampai Owner menyetujui.`)
+      setNotes('')
+      setDraft(Object.fromEntries(ingredients.map(item => [item.id, { ingredient_id: item.id, input_quantity: '', input_unit: item.base_unit }])))
+      await loadData()
+    }
+    setSaving(false)
+  }
+
+  async function review(approve: boolean) {
+    if (!supabase || !detail) return
+    if (reviewNote.trim().length < 3) { setError('Catatan Owner wajib diisi, minimal 3 karakter.'); return }
+    if (!window.confirm(approve ? 'Setujui koreksi stok ini? Saldo akan berubah jika masih cocok dengan snapshot.' : 'Tolak pengajuan opname ini?')) return
+    setSaving(true); setError(''); setSuccess('')
+    const { data, error: e } = await supabase.rpc('review_stocktake', {
+      p_stocktake_id: detail.id, p_approve: approve, p_review_note: reviewNote.trim(),
+    })
+    if (e) setError(`Review gagal: ${e.message}`)
+    else {
+      const result = data as { status?: string; message?: string } | null
+      if (result?.status === 'stale') {
+        setError(result.message || 'Saldo berubah sejak pengajuan. Silakan lakukan opname ulang.')
+        setDetail(null); setDetailItems([])
+      } else if (result?.status === 'rejected' || (!approve && result?.status !== 'approved')) {
+        setSuccess('Pengajuan opname ditolak.')
+        setDetail(null); setDetailItems([])
+      } else if (result?.status === 'approved') {
+        setSuccess('Opname disetujui. Koreksi saldo dan riwayat stok telah diproses.')
+        setDetail(null); setDetailItems([])
+      } else {
+        setError('Respons review tidak dikenali. Muat ulang riwayat untuk memastikan statusnya.')
+      }
+      await loadData()
+    }
+    setSaving(false)
+  }
+
+  const statusText: Record<StocktakeHeader['status'], string> = {
+    pending: 'Menunggu Owner', approved: 'Disetujui', rejected: 'Ditolak', stale: 'Perlu opname ulang',
+  }
+  const unitName = (id: string) => units.find(u => u.id === id)?.name || 'Unit tidak ditemukan'
+  const ingredientName = (id: string) => ingredients.find(i => i.id === id)?.name || 'Bahan tidak ditemukan'
+
+  return <div className="users-page">
+    <div className="page-heading">
+      <div><p className="eyebrow">KONTROL PERSEDIAAN</p><h1>Stok Opname & Audit Selisih</h1>
+        <p className="muted">Bandingkan hitungan fisik dengan saldo sistem. Pengajuan tidak mengubah saldo sebelum disetujui Owner.</p></div>
+      <button className="secondary-button" type="button" onClick={() => void loadData()} disabled={loading}><RefreshCw size={16}/> Muat ulang</button>
+    </div>
+    {error && <div className="form-message users-alert">{error}</div>}
+    {success && <div className="users-success"><CheckCircle2 size={17}/>{success}</div>}
+
+    {!detail && <form className="user-form" onSubmit={submitOpname}>
+      <div className="user-form-heading"><div><h2>Ajukan hitung fisik</h2><p className="muted">Kosongkan bahan yang tidak dihitung. Isi 0 jika benar-benar tidak ada stok.</p></div></div>
+      <div className="user-form-grid">
+        <label className="field"><span>Unit yang dihitung</span><select value={unitId} disabled={!isOwner} required onChange={e => setUnitId(e.target.value)}>
+          <option value="">Pilih unit…</option>{units.filter(u => isOwner || u.id === profile?.unit_id).map(u => <option key={u.id} value={u.id}>{u.name}</option>)}
+        </select></label>
+        <label className="field"><span>Catatan opname</span><input value={notes} onChange={e => setNotes(e.target.value)} placeholder="Contoh: opname akhir shift" maxLength={500}/></label>
+      </div>
+      <div className="users-table-wrap">
+        <table className="users-table"><thead><tr><th>Bahan</th><th>Satuan hitung</th><th>Jumlah fisik</th><th>Konversi ke stok dasar</th></tr></thead>
+          <tbody>{ingredients.map(item => {
+            const row = draft[item.id] || { ingredient_id: item.id, input_quantity: '', input_unit: item.base_unit }
+            const availableUnits = ingredientUnits.filter(unit => unit.ingredient_id === item.id)
+            const factor = Number(availableUnits.find(unit => unit.unit_name.toLowerCase() === row.input_unit.toLowerCase())?.factor_to_base || 0)
+            return <tr key={item.id}><td><strong>{item.name}</strong><small>Stok dasar: {item.base_unit}</small></td>
+              <td><select value={row.input_unit} onChange={e => setDraft(prev => ({...prev,[item.id]:{...row,input_unit:e.target.value}}))}>
+                {availableUnits.map(unit => <option key={unit.unit_name} value={unit.unit_name}>{unit.unit_name}</option>)}
+              </select></td>
+              <td><input aria-label={`Jumlah fisik ${item.name}`} type="number" min="0" step="0.0001" value={row.input_quantity} onChange={e => setDraft(prev => ({...prev,[item.id]:{...row,input_quantity:e.target.value}}))} placeholder="Belum dihitung"/></td>
+              <td>{row.input_quantity === '' ? '—' : `${quantity(Number(row.input_quantity)*factor)} ${item.base_unit}`}{row.input_unit.toLowerCase() !== item.base_unit.toLowerCase() && factor > 0 && <small>1 {row.input_unit} = {quantity(factor)} {item.base_unit}</small>}</td>
+            </tr>
+          })}{!ingredients.length && <tr><td colSpan={4}>Belum ada bahan aktif.</td></tr>}</tbody>
+        </table>
+      </div>
+      <div className="form-actions"><button className="primary-button" type="submit" disabled={saving || loading || !unitId || !ingredients.length}>{saving ? <LoaderCircle size={16} className="spin"/> : <ClipboardCheck size={16}/>} {saving ? 'Mengajukan…' : 'Ajukan untuk persetujuan Owner'}</button></div>
+    </form>}
+
+    {detail && <section className="user-form">
+      <div className="user-form-heading"><div><h2>Rincian opname</h2><p className="muted">{unitName(detail.unit_id)} · {new Date(detail.submitted_at).toLocaleString('id-ID')} · {statusText[detail.status]}</p></div>
+        <button type="button" className="secondary-button" onClick={() => setDetail(null)}>Kembali</button></div>
+      <div className="users-table-wrap"><table className="users-table"><thead><tr><th>Bahan</th><th>Saldo sistem</th><th>Hitung fisik</th><th>Selisih</th><th>Nilai selisih perkiraan</th></tr></thead>
+        <tbody>{detailItems.map(item => { const delta=Number(item.variance_quantity); const ing=ingredients.find(i=>i.id===item.ingredient_id); return <tr key={item.id}>
+          <td><strong>{ingredientName(item.ingredient_id)}</strong><small>Input: {quantity(Number(item.input_quantity))} {item.input_unit}</small></td>
+          <td>{quantity(Number(item.system_quantity))} {item.base_unit}</td><td>{quantity(Number(item.counted_base_quantity))} {item.base_unit}</td>
+          <td><strong>{delta>0?'+':''}{quantity(delta)} {item.base_unit}</strong><small>{delta<0?'Kurang dari saldo sistem':delta>0?'Lebih dari saldo sistem':'Sesuai'}</small></td>
+          <td>{'—'}<small>Nilai rupiah belum dihitung pada tampilan ini</small></td>
+        </tr>})}</tbody></table></div>
+      {detail.status === 'pending' && isOwner && <form onSubmit={e=>{e.preventDefault();void review(true)}} className="user-form">
+        <label className="field"><span>Catatan pemeriksaan Owner (wajib)</span><textarea required minLength={3} value={reviewNote} onChange={e=>setReviewNote(e.target.value)} placeholder="Contoh: hasil hitung fisik sudah diverifikasi oleh penanggung jawab unit."/></label>
+        <div className="form-actions"><button type="submit" className="primary-button" disabled={saving}>{saving?<LoaderCircle size={16} className="spin"/>:<CheckCircle2 size={16}/>} Setujui & terapkan koreksi</button>
+          <button type="button" className="secondary-button" disabled={saving} onClick={()=>void review(false)}><X size={16}/> Tolak pengajuan</button></div>
+        <p className="users-footnote">Jika saldo berubah setelah pengajuan dibuat, database akan menolak persetujuan. Petugas harus melakukan opname ulang.</p>
+      </form>}
+      {detail.review_note && <div className="notice"><ShieldCheck size={17}/><span>Catatan Owner: {detail.review_note}</span></div>}
+    </section>}
+
+    <section className="users-table-wrap">
+      <div className="sales-panel-heading" style={{padding:'18px 20px'}}><div><h2>Riwayat pengajuan opname</h2><p className="muted">Pengajuan terbaru yang dapat diakses akun ini.</p></div></div>
+      {loading ? <div className="users-empty"><LoaderCircle size={20} className="spin"/> Memuat pengajuan…</div> :
+      <table className="users-table"><thead><tr><th>Waktu</th><th>Unit</th><th>Status</th><th>Catatan</th><th>Aksi</th></tr></thead><tbody>
+        {headers.filter(h=>isOwner || h.unit_id===profile?.unit_id).map(h=><tr key={h.id}><td>{new Date(h.submitted_at).toLocaleString('id-ID')}</td><td>{unitName(h.unit_id)}</td>
+          <td><span className={`status-tag ${h.status==='approved'?'active':h.status==='pending'?'inactive':'inactive'}`}>{statusText[h.status]}</span></td><td>{h.notes||'—'}</td>
+          <td><button type="button" className="small-action" onClick={()=>void openDetail(h)}><ClipboardList size={14}/> Detail</button></td></tr>)}
+        {!headers.filter(h=>isOwner || h.unit_id===profile?.unit_id).length && <tr><td colSpan={5}>Belum ada pengajuan opname.</td></tr>}
+      </tbody></table>}
+    </section>
+    <p className="users-footnote"><ShieldCheck size={15}/> Saldo hanya berubah setelah persetujuan Owner. Semua koreksi harus dapat ditelusuri di riwayat stok.</p>
+  </div>
 }
 
 function StockReportsModule() {
