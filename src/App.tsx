@@ -1,4 +1,4 @@
-
+```
 import { useEffect, useState } from 'react'
 import type { FormEvent } from 'react'
 import type { Session } from '@supabase/supabase-js'
@@ -133,7 +133,9 @@ export default function App() {
               ? <SalesModule profile={profile} />
             : active === 'Stok Bahan Baku' && role && ['owner', 'cashier', 'kitchen'].includes(role)
               ? <StockModule profile={profile} currentUserId={session.user.id} />
-              : <ModulePlaceholder title={active} role={role} />}
+              : active === 'Laporan' && role === 'owner'
+                ? <StockReportsModule />
+                : <ModulePlaceholder title={active} role={role} />}
         {!profile && <div className="notice warning"><ShieldCheck size={18} /><div><strong>Profil akses belum siap.</strong><p>Jangan gunakan akun ini untuk operasional sampai Owner menetapkan profil dan unit yang benar.</p></div></div>}
       </section>
     </main>
@@ -499,7 +501,6 @@ function MenuManagementModule() {
   </div>
 }
 
-type IngredientUnit = { id?: string; ingredient_id?: string; unit_name: string; factor_to_base: number; is_active?: boolean }
 type Ingredient = {
   id: string
   code: string | null
@@ -539,8 +540,6 @@ function StockModule({ profile, currentUserId }: { profile: Profile | null; curr
   const canIssue = isOwner || permissions.stock_issue
   const canManageIngredients = isOwner || permissions.ingredient_manage
   const [ingredients, setIngredients] = useState<Ingredient[]>([])
-  const [ingredientUnits, setIngredientUnits] = useState<Record<string, IngredientUnit[]>>({})
-  const [unitRows, setUnitRows] = useState<{ unit_name: string; factor_to_base: string }[]>([])
   const [units, setUnits] = useState<StockUnit[]>([])
   const [balances, setBalances] = useState<StockBalance[]>([])
   const [movements, setMovements] = useState<StockMovement[]>([])
@@ -595,22 +594,12 @@ function StockModule({ profile, currentUserId }: { profile: Profile | null; curr
     if (!supabase) return
     setLoading(true)
     setError('')
-    const [ingredientResult, unitResult, conversionResult] = await Promise.all([
+    const [ingredientResult, unitResult] = await Promise.all([
       supabase.from('ingredients').select('id,code,name,base_unit,alternate_unit,alternate_factor,reorder_level,is_active').order('name'),
       supabase.from('business_units').select('id,code,name,kind,is_active').eq('is_active', true).order('name'),
-      supabase.from('ingredient_units').select('id,ingredient_id,unit_name,factor_to_base,is_active').eq('is_active', true).order('unit_name'),
     ])
     if (ingredientResult.error) setError(`Gagal memuat bahan: ${ingredientResult.error.message}`)
     else setIngredients((ingredientResult.data || []) as Ingredient[])
-    if (conversionResult.error) setError(prev => [prev, `Gagal memuat satuan bahan: ${conversionResult.error.message}`].filter(Boolean).join(' · '))
-    else {
-      const grouped: Record<string, IngredientUnit[]> = {}
-      for (const row of (conversionResult.data || []) as (IngredientUnit & { ingredient_id: string })[]) {
-        grouped[row.ingredient_id] ||= []
-        grouped[row.ingredient_id].push(row)
-      }
-      setIngredientUnits(grouped)
-    }
     if (unitResult.error) setError(prev => [prev, `Gagal memuat unit: ${unitResult.error.message}`].filter(Boolean).join(' · '))
     else {
       const loadedUnits = (unitResult.data || []) as StockUnit[]
@@ -638,11 +627,11 @@ function StockModule({ profile, currentUserId }: { profile: Profile | null; curr
 
   function resetIngredientForm() {
     setEditingIngredient(null); setIngredientName('')
-    setIngredientCode(''); setBaseUnit('kg'); setAlternateUnit(''); setAlternateFactor('1'); setUnitRows([]); setReorderLevel('0'); setIngredientActive(true)
+    setIngredientCode(''); setBaseUnit('kg'); setAlternateUnit(''); setAlternateFactor('1'); setReorderLevel('0'); setIngredientActive(true)
   }
   function editIngredient(item: Ingredient) {
     setEditingIngredient(item); setIngredientName(item.name)
-    setIngredientCode(item.code || ''); setBaseUnit(item.base_unit); setAlternateUnit(item.alternate_unit || ''); setAlternateFactor(String(item.alternate_factor || 1)); setUnitRows((ingredientUnits[item.id] || []).filter(u => u.unit_name !== item.base_unit).map(u => ({ unit_name: u.unit_name, factor_to_base: String(u.factor_to_base) }))); setReorderLevel(String(item.reorder_level))
+    setIngredientCode(item.code || ''); setBaseUnit(item.base_unit); setAlternateUnit(item.alternate_unit || ''); setAlternateFactor(String(item.alternate_factor || 1)); setReorderLevel(String(item.reorder_level))
     setIngredientActive(item.is_active); setError(''); setSuccess('')
   }
 
@@ -656,28 +645,16 @@ function StockModule({ profile, currentUserId }: { profile: Profile | null; curr
     if (alternateUnit.trim() && (!Number.isFinite(factor) || factor <= 0)) { setError('Konversi satuan alternatif harus lebih besar dari nol.'); return }
     if (alternateUnit.trim() && alternateUnit.trim().toLowerCase() === baseUnit.trim().toLowerCase()) { setError('Satuan alternatif harus berbeda dari satuan dasar.'); return }
     setSaving(true); setError(''); setSuccess('')
-    const cleanedUnits = unitRows.map(row => ({ unit_name: row.unit_name.trim(), factor_to_base: Number(row.factor_to_base) }))
-      .filter(row => row.unit_name)
-    if (cleanedUnits.some(row => !Number.isFinite(row.factor_to_base) || row.factor_to_base <= 0)) { setError('Setiap faktor konversi harus lebih besar dari nol.'); return }
-    if (cleanedUnits.some(row => row.unit_name.toLowerCase() === baseUnit.trim().toLowerCase())) { setError('Satuan tambahan tidak boleh sama dengan satuan dasar.'); return }
-    if (new Set(cleanedUnits.map(row => row.unit_name.toLowerCase())).size !== cleanedUnits.length) { setError('Nama satuan tambahan tidak boleh duplikat.'); return }
     const payload = {
       name: ingredientName.trim(), code: ingredientCode.trim() || null,
-      base_unit: baseUnit.trim(), alternate_unit: cleanedUnits[0]?.unit_name || null, alternate_factor: cleanedUnits[0]?.factor_to_base || null, reorder_level: level, is_active: ingredientActive,
+      base_unit: baseUnit.trim(), alternate_unit: alternateUnit.trim() || null, alternate_factor: alternateUnit.trim() ? factor : null, reorder_level: level, is_active: ingredientActive,
     }
-    let ingredientId = editingIngredient?.id || ''
     const result = editingIngredient
       ? await supabase.from('ingredients').update(payload).eq('id', editingIngredient.id)
-      : await supabase.from('ingredients').insert(payload).select('id').single()
+      : await supabase.from('ingredients').insert(payload)
     if (result.error) setError(`Bahan gagal disimpan: ${result.error.message}`)
     else {
-      if (!editingIngredient) ingredientId = (result.data as { id: string }).id
-      const { error: deleteError } = await supabase.from('ingredient_units').delete().eq('ingredient_id', ingredientId)
-      if (deleteError) { setError(`Bahan tersimpan, tetapi satuan lama gagal diperbarui: ${deleteError.message}`); setSaving(false); return }
-      const rowsToSave = [{ ingredient_id: ingredientId, unit_name: baseUnit.trim(), factor_to_base: 1, is_active: true }, ...cleanedUnits.map(row => ({ ingredient_id: ingredientId, unit_name: row.unit_name, factor_to_base: row.factor_to_base, is_active: true }))]
-      const { error: unitsError } = await supabase.from('ingredient_units').insert(rowsToSave)
-      if (unitsError) { setError(`Bahan tersimpan, tetapi satuan gagal disimpan: ${unitsError.message}`); setSaving(false); return }
-      setSuccess(editingIngredient ? 'Bahan baku dan satuannya berhasil diperbarui.' : 'Bahan baku dan satuannya berhasil ditambahkan.')
+      setSuccess(editingIngredient ? 'Bahan baku berhasil diperbarui.' : 'Bahan baku berhasil ditambahkan.')
       resetIngredientForm()
       await loadStock()
     }
@@ -701,7 +678,7 @@ function StockModule({ profile, currentUserId }: { profile: Profile | null; curr
     const qty = Number(movementQuantity)
     const selectedIngredient = ingredients.find(item => item.id === movementIngredient)
     const inputUnit = movementUnit || selectedIngredient?.base_unit || ''
-    const factor = inputUnit === selectedIngredient?.base_unit ? 1 : Number((ingredientUnits[selectedIngredient?.id || ''] || []).find(u => u.unit_name === inputUnit)?.factor_to_base || 0)
+    const factor = inputUnit === selectedIngredient?.alternate_unit ? Number(selectedIngredient?.alternate_factor || 0) : 1
     const cost = movementType === 'in' ? Number(unitCost || 0) : 0
     if (!selectedUnit) { setError('Pilih unit stok terlebih dahulu.'); return }
     if (!movementIngredient) { setError('Pilih bahan baku.'); return }
@@ -735,7 +712,7 @@ function StockModule({ profile, currentUserId }: { profile: Profile | null; curr
   const balanceFor = (ingredientId: string) => balances.find(balance => balance.ingredient_id === ingredientId)
   const activeIngredients = ingredients.filter(item => item.is_active)
   const selectedIngredientForMovement = activeIngredients.find(item => item.id === movementIngredient)
-  const movementUnitOptions = selectedIngredientForMovement ? (ingredientUnits[selectedIngredientForMovement.id] || [{ unit_name: selectedIngredientForMovement.base_unit, factor_to_base: 1 }]).map(u => u.unit_name) : []
+  const movementUnitOptions = selectedIngredientForMovement ? [selectedIngredientForMovement.base_unit, ...(selectedIngredientForMovement.alternate_unit ? [selectedIngredientForMovement.alternate_unit] : [])] : []
 
   if (permissionLoading) return <div className="placeholder-card"><LoaderCircle className="spin" size={22} /><h1>Memeriksa hak akses stok…</h1></div>
   if (!canView) return <div className="placeholder-card"><div className="module-icon"><ShieldCheck size={23} /></div><p className="eyebrow">AKSES TERBATAS</p><h1>Stok Bahan Baku</h1><p className="muted">Akun ini belum diberi izin untuk melihat stok. Hubungi Owner jika akses diperlukan.</p></div>
@@ -763,10 +740,10 @@ function StockModule({ profile, currentUserId }: { profile: Profile | null; curr
       <div className="user-form-heading"><div><h2>Catat pergerakan stok</h2><p className="muted">Stok tidak berkurang otomatis saat menu terjual.</p></div></div>
       <div className="user-form-grid">
         <label className="field"><span>Jenis transaksi</span><select value={movementType} onChange={e => setMovementType(e.target.value as 'in' | 'out')}><>{canReceive && <option value="in">Stok masuk / pembelian</option>}{canIssue && <option value="out">Stok keluar manual</option>}</></select></label>
-        <label className="field"><span>Bahan baku</span><select required value={movementIngredient} onChange={e => { const id = e.target.value; setMovementIngredient(id); const item = activeIngredients.find(i => i.id === id); setMovementUnit(item?.base_unit || '') }}><option value="">Pilih bahan…</option>{activeIngredients.map(item => <option key={item.id} value={item.id}>{item.name} ({item.base_unit}{(ingredientUnits[item.id] || []).filter(u => u.unit_name !== item.base_unit).length ? ` / ${(ingredientUnits[item.id] || []).filter(u => u.unit_name !== item.base_unit).map(u => u.unit_name).join(', ')}` : ''})</option>)}</select></label>
+        <label className="field"><span>Bahan baku</span><select required value={movementIngredient} onChange={e => { const id = e.target.value; setMovementIngredient(id); const item = activeIngredients.find(i => i.id === id); setMovementUnit(item?.base_unit || '') }}><option value="">Pilih bahan…</option>{activeIngredients.map(item => <option key={item.id} value={item.id}>{item.name} ({item.base_unit}{item.alternate_unit ? ` / ${item.alternate_unit}` : ''})</option>)}</select></label>
         <label className="field"><span>Satuan pembelian / transaksi</span><select value={movementUnit} onChange={e => setMovementUnit(e.target.value)} disabled={!selectedIngredientForMovement}>{movementUnitOptions.map(unit => <option key={unit} value={unit}>{unit}</option>)}</select></label>
         <label className="field"><span>Jumlah ({movementUnit || selectedIngredientForMovement?.base_unit || 'satuan'})</span><input required type="number" min="0.0001" step="0.0001" value={movementQuantity} onChange={e => setMovementQuantity(e.target.value)} placeholder="Contoh: 5" /></label>
-        {selectedIngredientForMovement && movementUnit !== selectedIngredientForMovement.base_unit && <p className="muted">Konversi: 1 {movementUnit} = {quantity(Number((ingredientUnits[selectedIngredientForMovement.id] || []).find(u => u.unit_name === movementUnit)?.factor_to_base || 0))} {selectedIngredientForMovement.base_unit}. Stok saldo dihitung dalam satuan dasar.</p>}
+        {selectedIngredientForMovement?.alternate_unit && movementUnit === selectedIngredientForMovement.alternate_unit && <p className="muted">Konversi: 1 {selectedIngredientForMovement.alternate_unit} = {quantity(Number(selectedIngredientForMovement.alternate_factor || 0))} {selectedIngredientForMovement.base_unit}. Stok tetap disimpan dalam satuan dasar.</p>}
         {movementType === 'in' && <label className="field"><span>Harga beli per {movementUnit || selectedIngredientForMovement?.base_unit || "satuan"} (Rp)</span><input type="number" min="0" step="1" value={unitCost} onChange={e => setUnitCost(e.target.value)} placeholder={`Contoh: harga untuk 1 ${movementUnit || selectedIngredientForMovement?.base_unit || "satuan"}`} /><small>Masukkan harga total untuk 1 satuan input yang dipilih di atas. Contoh: pilih kg, isi harga per kg; pilih botol, isi harga per botol.</small></label>}
         <label className="field"><span>{movementType === 'in' ? 'Catatan (opsional)' : 'Alasan stok keluar (wajib)'}</span><input value={movementNote} onChange={e => setMovementNote(e.target.value)} required={movementType === 'out'} placeholder={movementType === 'in' ? 'Contoh: pembelian dari pemasok' : 'Contoh: bahan rusak / pemakaian dapur'} /></label>
       </div>
@@ -779,14 +756,8 @@ function StockModule({ profile, currentUserId }: { profile: Profile | null; curr
         <label className="field"><span>Nama bahan</span><input required maxLength={120} value={ingredientName} onChange={e => setIngredientName(e.target.value)} placeholder="Contoh: Beras" /></label>
         <label className="field"><span>Kode bahan (opsional)</span><input maxLength={40} value={ingredientCode} onChange={e => setIngredientCode(e.target.value)} placeholder="Contoh: BB-001" /></label>
         <label className="field"><span>Satuan dasar (unit stok)</span><select value={baseUnit} onChange={e => setBaseUnit(e.target.value)}><option value="kg">Kilogram (kg)</option><option value="gram">Gram</option><option value="liter">Liter</option><option value="ml">Mililiter (ml)</option><option value="pcs">Buah / pcs</option><option value="botol">Botol</option><option value="ikat">Ikat</option><option value="pack">Pack</option><option value="dus">Dus</option></select></label>
-        <div className="field" style={{ gridColumn: '1 / -1' }}><span>Satuan tambahan dan konversi</span><small>Satuan dasar adalah unit saldo. Tambahkan sebanyak yang dibutuhkan. Faktor berarti 1 satuan tambahan setara berapa satuan dasar.</small>
-          {unitRows.map((row, index) => <div key={index} className="user-form-grid" style={{ marginTop: 8 }}>
-            <label className="field"><span>Nama satuan</span><input maxLength={30} value={row.unit_name} onChange={e => setUnitRows(prev => prev.map((r, i) => i === index ? { ...r, unit_name: e.target.value } : r))} placeholder="Contoh: kg, botol, ekor, potong" /></label>
-            <label className="field"><span>Isi 1 {row.unit_name || 'satuan'} = berapa {baseUnit}?</span><input type="number" min="0.0001" step="0.0001" value={row.factor_to_base} onChange={e => setUnitRows(prev => prev.map((r, i) => i === index ? { ...r, factor_to_base: e.target.value } : r))} placeholder={`Faktor terhadap ${baseUnit}`} /></label>
-            <button type="button" className="secondary-button" onClick={() => setUnitRows(prev => prev.filter((_, i) => i !== index))}>Hapus satuan</button>
-          </div>)}
-          <button type="button" className="secondary-button" style={{ marginTop: 10 }} onClick={() => setUnitRows(prev => [...prev, { unit_name: '', factor_to_base: '1' }])}><Plus size={15} /> Tambah satuan</button>
-        </div>
+        <label className="field"><span>Satuan pembelian alternatif (opsional)</span><input maxLength={30} value={alternateUnit} onChange={e => setAlternateUnit(e.target.value)} placeholder="Contoh: kg, dus, botol" /><small>Isi jika bahan bisa dibeli dengan satuan berbeda dari satuan stok dasar.</small></label>
+        <label className="field"><span>Isi 1 satuan pembelian dalam satuan stok dasar</span><input type="number" min="0.0001" step="0.0001" value={alternateFactor} onChange={e => setAlternateFactor(e.target.value)} disabled={!alternateUnit.trim()} /><small>Artinya: 1 {alternateUnit.trim() || "satuan alternatif"} = {alternateUnit.trim() ? alternateFactor || "…" : "—"} {baseUnit}. Contoh: 1 kg = 40 botol.</small></label>
         <label className="field"><span>Batas minimum stok</span><input required type="number" min="0" step="0.001" value={reorderLevel} onChange={e => setReorderLevel(e.target.value)} /></label>
         {editingIngredient && <label className="field field-check"><input type="checkbox" checked={ingredientActive} onChange={e => setIngredientActive(e.target.checked)} /><span>Bahan aktif</span></label>}
       </div>
@@ -807,7 +778,7 @@ function StockModule({ profile, currentUserId }: { profile: Profile | null; curr
             const low = item.is_active && qty <= Number(item.reorder_level)
             return <tr key={item.id}>
               <td><strong>{item.name}</strong><small>{item.code || 'Tanpa kode'}</small></td>
-              <td>{item.base_unit}{(ingredientUnits[item.id] || []).filter(u => u.unit_name !== item.base_unit).map(u => <small key={u.unit_name}>1 {u.unit_name} = {quantity(Number(u.factor_to_base))} {item.base_unit}</small>)}</td>
+              <td>{item.base_unit}{item.alternate_unit && <small>1 {item.alternate_unit} = {quantity(Number(item.alternate_factor || 0))} {item.base_unit}</small>}</td>
               <td><strong>{quantity(qty)} {item.base_unit}</strong>{balance && Number(balance.average_unit_cost) > 0 && <small>Rata-rata {money(Number(balance.average_unit_cost))}/{item.base_unit}</small>}</td>
               <td>{quantity(Number(item.reorder_level))} {item.base_unit}</td>
               <td><span className={`status-tag ${!item.is_active ? 'inactive' : low ? 'inactive' : 'active'}`}>{!item.is_active ? 'Nonaktif' : low ? 'Stok rendah' : 'Aktif'}</span></td>
@@ -1018,6 +989,79 @@ function Dashboard({ profile, email }: { profile: Profile | null; email: string 
     { title: 'Penerimaan stok', description: 'Catat bahan masuk per unit.', icon: ArrowDownToLine, status: 'Dalam pengembangan' },
   ].filter(m => role === 'owner' || !['Keuangan', 'Laporan'].includes(m.title)).map(m => <article className="module-card" key={m.title}><div className="module-icon"><m.icon size={20} /></div><h3>{m.title}</h3><p>{m.description}</p><span className="module-status">{m.status}</span></article>)}</div><div className="next-step"><div className="next-icon"><Database size={20} /></div><div><strong>Fondasi database sudah disiapkan.</strong><p>Modul operasional akan diaktifkan bertahap setelah pengujian akses dan alur transaksi.</p></div><ClipboardList className="next-arrow" size={20} /></div></>
 }
+
+function StockReportsModule() {
+  const [units, setUnits] = useState<BusinessUnit[]>([])
+  const [ingredients, setIngredients] = useState<Ingredient[]>([])
+  const [balances, setBalances] = useState<StockBalance[]>([])
+  const [movements, setMovements] = useState<StockMovement[]>([])
+  const [selectedUnit, setSelectedUnit] = useState('all')
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState('')
+  const [updatedAt, setUpdatedAt] = useState('')
+
+  async function loadReport() {
+    if (!supabase) return
+    setLoading(true)
+    setError('')
+    const [unitRes, ingredientRes, balanceRes, movementRes] = await Promise.all([
+      supabase.from('business_units').select('id,code,name,kind,is_active').eq('is_active', true).order('name'),
+      supabase.from('ingredients').select('id,code,name,base_unit,alternate_unit,alternate_factor,reorder_level,is_active').order('name'),
+      supabase.from('inventory_balances').select('unit_id,ingredient_id,quantity,average_unit_cost'),
+      supabase.from('inventory_movements').select('id,unit_id,ingredient_id,kind,quantity_delta,unit_cost,note,created_at,input_quantity,input_unit,conversion_factor,base_quantity').order('created_at', { ascending: false }).limit(200),
+    ])
+    const errors = [unitRes.error, ingredientRes.error, balanceRes.error, movementRes.error].filter(Boolean)
+    if (errors.length) setError(`Laporan belum lengkap: ${errors.map(e => e!.message).join(' · ')}`)
+    if (!unitRes.error) setUnits((unitRes.data || []) as BusinessUnit[])
+    if (!ingredientRes.error) setIngredients((ingredientRes.data || []) as Ingredient[])
+    if (!balanceRes.error) setBalances((balanceRes.data || []) as StockBalance[])
+    if (!movementRes.error) setMovements((movementRes.data || []) as StockMovement[])
+    setUpdatedAt(new Date().toLocaleString('id-ID'))
+    setLoading(false)
+  }
+
+  useEffect(() => { void loadReport() }, [])
+
+  const ingredientById = new Map(ingredients.map(i => [i.id, i]))
+  const unitById = new Map(units.map(u => [u.id, u]))
+  const visibleBalances = balances.filter(b => selectedUnit === 'all' || b.unit_id === selectedUnit)
+  const rows = visibleBalances.map(b => {
+    const ingredient = ingredientById.get(b.ingredient_id)
+    const unit = unitById.get(b.unit_id)
+    return { ...b, ingredient, unit, value: Number(b.quantity || 0) * Number(b.average_unit_cost || 0) }
+  }).filter(r => r.ingredient && r.unit)
+  const totalQtyRows = rows.length
+  const totalValue = rows.reduce((sum, r) => sum + r.value, 0)
+  const lowStock = rows.filter(r => r.ingredient && Number(r.quantity) <= Number(r.ingredient.reorder_level))
+  const unitTotals = units.map(unit => ({
+    ...unit,
+    count: rows.filter(r => r.unit_id === unit.id).length,
+    value: rows.filter(r => r.unit_id === unit.id).reduce((sum, r) => sum + r.value, 0),
+  }))
+  const recentMovements = movements.filter(m => selectedUnit === 'all' || m.unit_id === selectedUnit).slice(0, 30)
+
+  return <div className="stock-page">
+    <div className="page-heading">
+      <div><p className="eyebrow">RINGKASAN PERSEDIAAN</p><h1>Laporan Stok & Nilai Persediaan</h1><p className="muted">Nilai stok dihitung dari saldo saat ini × harga pokok rata-rata yang tersimpan di database.</p></div>
+      <button className="secondary-button" onClick={() => void loadReport()} disabled={loading}><RefreshCw size={16} /> Muat ulang</button>
+    </div>
+    {error && <div className="form-message users-alert">{error}</div>}
+    <div className="user-form-grid">
+      <label className="field"><span>Filter unit</span><select value={selectedUnit} onChange={e => setSelectedUnit(e.target.value)}><option value="all">Semua unit</option>{units.map(u => <option key={u.id} value={u.id}>{u.name}</option>)}</select></label>
+    </div>
+    <div className="summary-grid">
+      <article className="summary-card"><span>Nilai persediaan</span><strong>{loading ? 'Memuat…' : money(totalValue)}</strong><small>{selectedUnit === 'all' ? 'Gabungan unit yang dapat diakses' : unitById.get(selectedUnit)?.name}</small></article>
+      <article className="summary-card"><span>Baris saldo stok</span><strong>{loading ? '—' : String(totalQtyRows)}</strong><small>Bahan per unit dengan saldo tercatat</small></article>
+      <article className="summary-card"><span>Perlu diperiksa</span><strong>{loading ? '—' : String(lowStock.length)}</strong><small>Saldo sama dengan atau di bawah batas minimum</small></article>
+    </div>
+    {selectedUnit === 'all' && <section className="panel"><div className="section-heading"><div><h2>Nilai persediaan per unit</h2><p className="muted">Perbandingan nilai stok antar cabang dan bazar.</p></div></div><div className="table-wrap"><table><thead><tr><th>Unit</th><th>Jenis</th><th>Baris stok</th><th>Nilai persediaan</th></tr></thead><tbody>{unitTotals.map(u => <tr key={u.id}><td><strong>{u.name}</strong></td><td>{u.kind === 'branch' ? 'Cabang' : 'Bazar'}</td><td>{u.count}</td><td><strong>{money(u.value)}</strong></td></tr>)}</tbody></table></div></section>}
+    <section className="panel"><div className="section-heading"><div><h2>Rincian saldo dan valuasi</h2><p className="muted">Harga pokok rata-rata berasal dari saldo database, bukan harga jual menu.</p></div></div><div className="table-wrap"><table><thead><tr><th>Unit</th><th>Bahan</th><th>Saldo</th><th>Rata-rata biaya</th><th>Nilai stok</th><th>Status</th></tr></thead><tbody>{rows.map((r, index) => <tr key={`${r.unit_id}-${r.ingredient_id}-${index}`}><td>{r.unit?.name}</td><td><strong>{r.ingredient?.name}</strong></td><td>{quantity(Number(r.quantity))} {r.ingredient?.base_unit}</td><td>{money(Number(r.average_unit_cost || 0))}/{r.ingredient?.base_unit}</td><td><strong>{money(r.value)}</strong></td><td>{Number(r.quantity) <= Number(r.ingredient?.reorder_level || 0) ? <span className="phase-pill">Minimum</span> : <span className="phase-pill">Aman</span>}</td></tr>)}{!loading && rows.length === 0 && <tr><td colSpan={6}>Belum ada saldo stok untuk filter ini.</td></tr>}</tbody></table></div></section>
+    <section className="panel"><div className="section-heading"><div><h2>Riwayat stok terbaru</h2><p className="muted">Maksimal 30 pergerakan terbaru sesuai filter unit.</p></div></div><div className="table-wrap"><table><thead><tr><th>Waktu</th><th>Unit</th><th>Bahan</th><th>Jenis</th><th>Jumlah input</th><th>Perubahan saldo dasar</th><th>Catatan</th></tr></thead><tbody>{recentMovements.map(m => { const ing = ingredientById.get(m.ingredient_id); const delta = Number(m.quantity_delta || 0); return <tr key={m.id}><td>{new Date(m.created_at).toLocaleString('id-ID')}</td><td>{unitById.get(m.unit_id)?.name || '—'}</td><td>{ing?.name || '—'}</td><td>{m.kind}</td><td>{m.input_quantity != null ? `${quantity(Number(m.input_quantity))} ${m.input_unit || ''}` : '—'}</td><td>{delta > 0 ? '+' : ''}{quantity(delta)} {ing?.base_unit || ''}</td><td>{m.note || '—'}</td></tr>})}{!loading && recentMovements.length === 0 && <tr><td colSpan={7}>Belum ada riwayat stok.</td></tr>}</tbody></table></div></section>
+    <p className="muted">Data diperbarui: {updatedAt || '—'}. Laporan ini membaca data yang tersedia sesuai hak akses Supabase.</p>
+  </div>
+}
+
 function ModulePlaceholder({ title, role }: { title: string; role?: Role }) {
   return <div className="placeholder-card"><div className="module-icon"><ClipboardList size={23} /></div><p className="eyebrow">MODUL TERENCANA</p><h1>{title}</h1><p className="muted">Modul ini belum diaktifkan pada baseline pertama. Struktur akses dan database akan disiapkan sebelum transaksi nyata diaktifkan.</p><div className="warning-box"><ShieldCheck size={18} /><p>Peran saat ini: <strong>{role ? roleLabels[role] : 'belum ditetapkan'}</strong>. Jangan mencatat transaksi produksi di modul yang belum selesai.</p></div><button className="secondary-button" onClick={() => window.location.reload()}>Muat ulang aplikasi</button></div>
 }
+```
