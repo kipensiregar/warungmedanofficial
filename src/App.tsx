@@ -676,7 +676,6 @@ function StockModule({ profile, currentUserId }: { profile: Profile | null; curr
     const selectedIngredient = ingredients.find(item => item.id === movementIngredient)
     const inputUnit = movementUnit || selectedIngredient?.base_unit || ''
     const factor = inputUnit === selectedIngredient?.alternate_unit ? Number(selectedIngredient?.alternate_factor || 0) : 1
-    const baseQty = qty * factor
     const cost = movementType === 'in' ? Number(unitCost || 0) : 0
     if (!selectedUnit) { setError('Pilih unit stok terlebih dahulu.'); return }
     if (!movementIngredient) { setError('Pilih bahan baku.'); return }
