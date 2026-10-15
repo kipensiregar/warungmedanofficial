@@ -1172,7 +1172,7 @@ function StocktakeModule({ profile, currentUserId }: { profile: Profile | null; 
       <div className="user-form-heading"><div><h2>Rincian opname</h2><p className="muted">{unitName(detail.unit_id)} · {new Date(detail.submitted_at).toLocaleString('id-ID')} · {statusText[detail.status]}</p></div>
         <button type="button" className="secondary-button" onClick={() => setDetail(null)}>Kembali</button></div>
       <div className="users-table-wrap"><table className="users-table"><thead><tr><th>Bahan</th><th>Saldo sistem</th><th>Hitung fisik</th><th>Selisih</th><th>Nilai selisih perkiraan</th></tr></thead>
-        <tbody>{detailItems.map(item => { const delta=Number(item.variance_quantity); const ing=ingredients.find(i=>i.id===item.ingredient_id); return <tr key={item.id}>
+        <tbody>{detailItems.map(item => { const delta=Number(item.variance_quantity); return <tr key={item.id}>
           <td><strong>{ingredientName(item.ingredient_id)}</strong><small>Input: {quantity(Number(item.input_quantity))} {item.input_unit}</small></td>
           <td>{quantity(Number(item.system_quantity))} {item.base_unit}</td><td>{quantity(Number(item.counted_base_quantity))} {item.base_unit}</td>
           <td><strong>{delta>0?'+':''}{quantity(delta)} {item.base_unit}</strong><small>{delta<0?'Kurang dari saldo sistem':delta>0?'Lebih dari saldo sistem':'Sesuai'}</small></td>
