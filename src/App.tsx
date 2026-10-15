@@ -503,6 +503,8 @@ type Ingredient = {
   code: string | null
   name: string
   base_unit: string
+  alternate_unit: string | null
+  alternate_factor: number | null
   reorder_level: number
   is_active: boolean
 }
@@ -510,7 +512,7 @@ type StockUnit = { id: string; code: string; name: string; kind: 'branch' | 'baz
 type StockBalance = { unit_id: string; ingredient_id: string; quantity: number; average_unit_cost: number }
 type StockMovement = {
   id: string; unit_id: string; ingredient_id: string; kind: string
-  quantity_delta: number; unit_cost: number; note: string | null; created_at: string
+  quantity_delta: number; unit_cost: number; note: string | null; created_at: string; input_quantity?: number | null; input_unit?: string | null; conversion_factor?: number | null; base_quantity?: number | null
 }
 
 function movementLabel(kind: string) {
@@ -548,11 +550,14 @@ function StockModule({ profile, currentUserId }: { profile: Profile | null; curr
   const [ingredientName, setIngredientName] = useState('')
   const [ingredientCode, setIngredientCode] = useState('')
   const [baseUnit, setBaseUnit] = useState('kg')
+  const [alternateUnit, setAlternateUnit] = useState('')
+  const [alternateFactor, setAlternateFactor] = useState('1')
   const [reorderLevel, setReorderLevel] = useState('0')
   const [ingredientActive, setIngredientActive] = useState(true)
   const [movementType, setMovementType] = useState<'in' | 'out'>('in')
   const [movementIngredient, setMovementIngredient] = useState('')
   const [movementQuantity, setMovementQuantity] = useState('')
+  const [movementUnit, setMovementUnit] = useState('')
   const [unitCost, setUnitCost] = useState('')
   const [movementNote, setMovementNote] = useState('')
 
@@ -587,7 +592,7 @@ function StockModule({ profile, currentUserId }: { profile: Profile | null; curr
     setLoading(true)
     setError('')
     const [ingredientResult, unitResult] = await Promise.all([
-      supabase.from('ingredients').select('id,code,name,base_unit,reorder_level,is_active').order('name'),
+      supabase.from('ingredients').select('id,code,name,base_unit,alternate_unit,alternate_factor,reorder_level,is_active').order('name'),
       supabase.from('business_units').select('id,code,name,kind,is_active').eq('is_active', true).order('name'),
     ])
     if (ingredientResult.error) setError(`Gagal memuat bahan: ${ingredientResult.error.message}`)
@@ -606,7 +611,7 @@ function StockModule({ profile, currentUserId }: { profile: Profile | null; curr
     if (!supabase || !unitId) { setBalances([]); setMovements([]); return }
     const [balanceResult, movementResult] = await Promise.all([
       supabase.from('inventory_balances').select('unit_id,ingredient_id,quantity,average_unit_cost').eq('unit_id', unitId),
-      supabase.from('inventory_movements').select('id,unit_id,ingredient_id,kind,quantity_delta,unit_cost,note,created_at').eq('unit_id', unitId).order('created_at', { ascending: false }).limit(40),
+      supabase.from('inventory_movements').select('id,unit_id,ingredient_id,kind,quantity_delta,unit_cost,note,created_at,input_quantity,input_unit,conversion_factor,base_quantity').eq('unit_id', unitId).order('created_at', { ascending: false }).limit(40),
     ])
     if (balanceResult.error) setError(prev => [prev, `Gagal memuat saldo: ${balanceResult.error.message}`].filter(Boolean).join(' · '))
     else setBalances((balanceResult.data || []) as StockBalance[])
@@ -619,11 +624,11 @@ function StockModule({ profile, currentUserId }: { profile: Profile | null; curr
 
   function resetIngredientForm() {
     setEditingIngredient(null); setIngredientName('')
-    setIngredientCode(''); setBaseUnit('kg'); setReorderLevel('0'); setIngredientActive(true)
+    setIngredientCode(''); setBaseUnit('kg'); setAlternateUnit(''); setAlternateFactor('1'); setReorderLevel('0'); setIngredientActive(true)
   }
   function editIngredient(item: Ingredient) {
     setEditingIngredient(item); setIngredientName(item.name)
-    setIngredientCode(item.code || ''); setBaseUnit(item.base_unit); setReorderLevel(String(item.reorder_level))
+    setIngredientCode(item.code || ''); setBaseUnit(item.base_unit); setAlternateUnit(item.alternate_unit || ''); setAlternateFactor(String(item.alternate_factor || 1)); setReorderLevel(String(item.reorder_level))
     setIngredientActive(item.is_active); setError(''); setSuccess('')
   }
 
@@ -633,10 +638,13 @@ function StockModule({ profile, currentUserId }: { profile: Profile | null; curr
     const level = Number(reorderLevel)
     if (!ingredientName.trim() || !baseUnit.trim()) { setError('Nama bahan dan satuan wajib diisi.'); return }
     if (!Number.isFinite(level) || level < 0) { setError('Batas minimum stok tidak valid.'); return }
+    const factor = Number(alternateFactor)
+    if (alternateUnit.trim() && (!Number.isFinite(factor) || factor <= 0)) { setError('Konversi satuan alternatif harus lebih besar dari nol.'); return }
+    if (alternateUnit.trim() && alternateUnit.trim().toLowerCase() === baseUnit.trim().toLowerCase()) { setError('Satuan alternatif harus berbeda dari satuan dasar.'); return }
     setSaving(true); setError(''); setSuccess('')
     const payload = {
       name: ingredientName.trim(), code: ingredientCode.trim() || null,
-      base_unit: baseUnit.trim(), reorder_level: level, is_active: ingredientActive,
+      base_unit: baseUnit.trim(), alternate_unit: alternateUnit.trim() || null, alternate_factor: alternateUnit.trim() ? factor : null, reorder_level: level, is_active: ingredientActive,
     }
     const result = editingIngredient
       ? await supabase.from('ingredients').update(payload).eq('id', editingIngredient.id)
@@ -665,22 +673,27 @@ function StockModule({ profile, currentUserId }: { profile: Profile | null; curr
     if (movementType === 'in' && !canReceive) { setError('Akun ini tidak memiliki izin stok masuk.'); return }
     if (movementType === 'out' && !canIssue) { setError('Akun ini tidak memiliki izin stok keluar.'); return }
     const qty = Number(movementQuantity)
+    const selectedIngredient = ingredients.find(item => item.id === movementIngredient)
+    const inputUnit = movementUnit || selectedIngredient?.base_unit || ''
+    const factor = inputUnit === selectedIngredient?.alternate_unit ? Number(selectedIngredient?.alternate_factor || 0) : 1
+    const baseQty = qty * factor
     const cost = movementType === 'in' ? Number(unitCost || 0) : 0
     if (!selectedUnit) { setError('Pilih unit stok terlebih dahulu.'); return }
     if (!movementIngredient) { setError('Pilih bahan baku.'); return }
     if (!Number.isFinite(qty) || qty <= 0) { setError('Jumlah harus lebih besar dari nol.'); return }
+    if (!selectedIngredient || !inputUnit || !Number.isFinite(factor) || factor <= 0) { setError('Konfigurasi satuan bahan belum valid.'); return }
     if (movementType === 'out' && !movementNote.trim()) { setError('Alasan stok keluar wajib diisi.'); return }
     if (movementType === 'in' && (!Number.isFinite(cost) || cost < 0)) { setError('Harga beli per satuan tidak valid.'); return }
     setSaving(true); setError(''); setSuccess('')
     const requestId = crypto.randomUUID()
     const result = movementType === 'in'
-      ? await supabase.rpc('receive_stock', {
+      ? await supabase.rpc('receive_stock_converted', {
           p_unit_id: selectedUnit, p_ingredient_id: movementIngredient,
-          p_quantity: qty, p_unit_cost: cost, p_note: movementNote.trim() || null, p_request_id: requestId,
+          p_input_quantity: qty, p_input_unit: inputUnit, p_unit_cost: cost, p_note: movementNote.trim() || null, p_request_id: requestId,
         })
-      : await supabase.rpc('issue_stock', {
+      : await supabase.rpc('issue_stock_converted', {
           p_unit_id: selectedUnit, p_ingredient_id: movementIngredient,
-          p_quantity: qty, p_note: movementNote.trim(), p_request_id: requestId,
+          p_input_quantity: qty, p_input_unit: inputUnit, p_note: movementNote.trim(), p_request_id: requestId,
         })
     if (result.error) setError(`Stok gagal disimpan: ${result.error.message}`)
     else {
@@ -696,6 +709,8 @@ function StockModule({ profile, currentUserId }: { profile: Profile | null; curr
   const selectedUnitInfo = units.find(unit => unit.id === selectedUnit)
   const balanceFor = (ingredientId: string) => balances.find(balance => balance.ingredient_id === ingredientId)
   const activeIngredients = ingredients.filter(item => item.is_active)
+  const selectedIngredientForMovement = activeIngredients.find(item => item.id === movementIngredient)
+  const movementUnitOptions = selectedIngredientForMovement ? [selectedIngredientForMovement.base_unit, ...(selectedIngredientForMovement.alternate_unit ? [selectedIngredientForMovement.alternate_unit] : [])] : []
 
   if (permissionLoading) return <div className="placeholder-card"><LoaderCircle className="spin" size={22} /><h1>Memeriksa hak akses stok…</h1></div>
   if (!canView) return <div className="placeholder-card"><div className="module-icon"><ShieldCheck size={23} /></div><p className="eyebrow">AKSES TERBATAS</p><h1>Stok Bahan Baku</h1><p className="muted">Akun ini belum diberi izin untuk melihat stok. Hubungi Owner jika akses diperlukan.</p></div>
@@ -723,8 +738,10 @@ function StockModule({ profile, currentUserId }: { profile: Profile | null; curr
       <div className="user-form-heading"><div><h2>Catat pergerakan stok</h2><p className="muted">Stok tidak berkurang otomatis saat menu terjual.</p></div></div>
       <div className="user-form-grid">
         <label className="field"><span>Jenis transaksi</span><select value={movementType} onChange={e => setMovementType(e.target.value as 'in' | 'out')}><>{canReceive && <option value="in">Stok masuk / pembelian</option>}{canIssue && <option value="out">Stok keluar manual</option>}</></select></label>
-        <label className="field"><span>Bahan baku</span><select required value={movementIngredient} onChange={e => setMovementIngredient(e.target.value)}><option value="">Pilih bahan…</option>{activeIngredients.map(item => <option key={item.id} value={item.id}>{item.name} ({item.base_unit})</option>)}</select></label>
-        <label className="field"><span>Jumlah ({activeIngredients.find(item => item.id === movementIngredient)?.base_unit || 'satuan'})</span><input required type="number" min="0.0001" step="0.0001" value={movementQuantity} onChange={e => setMovementQuantity(e.target.value)} placeholder="Contoh: 5" /></label>
+        <label className="field"><span>Bahan baku</span><select required value={movementIngredient} onChange={e => { const id = e.target.value; setMovementIngredient(id); const item = activeIngredients.find(i => i.id === id); setMovementUnit(item?.base_unit || '') }}><option value="">Pilih bahan…</option>{activeIngredients.map(item => <option key={item.id} value={item.id}>{item.name} ({item.base_unit}{item.alternate_unit ? ` / ${item.alternate_unit}` : ''})</option>)}</select></label>
+        <label className="field"><span>Satuan input</span><select value={movementUnit} onChange={e => setMovementUnit(e.target.value)} disabled={!selectedIngredientForMovement}>{movementUnitOptions.map(unit => <option key={unit} value={unit}>{unit}</option>)}</select></label>
+        <label className="field"><span>Jumlah ({movementUnit || selectedIngredientForMovement?.base_unit || 'satuan'})</span><input required type="number" min="0.0001" step="0.0001" value={movementQuantity} onChange={e => setMovementQuantity(e.target.value)} placeholder="Contoh: 5" /></label>
+        {selectedIngredientForMovement?.alternate_unit && movementUnit === selectedIngredientForMovement.alternate_unit && <p className="muted">Konversi: 1 {selectedIngredientForMovement.alternate_unit} = {quantity(Number(selectedIngredientForMovement.alternate_factor || 0))} {selectedIngredientForMovement.base_unit}. Stok tetap disimpan dalam satuan dasar.</p>}
         {movementType === 'in' && <label className="field"><span>Harga beli per satuan (Rp)</span><input type="number" min="0" step="1" value={unitCost} onChange={e => setUnitCost(e.target.value)} placeholder="Opsional, isi 0 jika tidak diketahui" /></label>}
         <label className="field"><span>{movementType === 'in' ? 'Catatan (opsional)' : 'Alasan stok keluar (wajib)'}</span><input value={movementNote} onChange={e => setMovementNote(e.target.value)} required={movementType === 'out'} placeholder={movementType === 'in' ? 'Contoh: pembelian dari pemasok' : 'Contoh: bahan rusak / pemakaian dapur'} /></label>
       </div>
@@ -736,7 +753,9 @@ function StockModule({ profile, currentUserId }: { profile: Profile | null; curr
       <div className="user-form-grid">
         <label className="field"><span>Nama bahan</span><input required maxLength={120} value={ingredientName} onChange={e => setIngredientName(e.target.value)} placeholder="Contoh: Beras" /></label>
         <label className="field"><span>Kode bahan (opsional)</span><input maxLength={40} value={ingredientCode} onChange={e => setIngredientCode(e.target.value)} placeholder="Contoh: BB-001" /></label>
-        <label className="field"><span>Satuan dasar</span><select value={baseUnit} onChange={e => setBaseUnit(e.target.value)}><option value="kg">Kilogram (kg)</option><option value="gram">Gram</option><option value="liter">Liter</option><option value="ml">Mililiter (ml)</option><option value="pcs">Buah / pcs</option><option value="ikat">Ikat</option><option value="pack">Pack</option><option value="dus">Dus</option></select></label>
+        <label className="field"><span>Satuan dasar (unit stok)</span><select value={baseUnit} onChange={e => setBaseUnit(e.target.value)}><option value="kg">Kilogram (kg)</option><option value="gram">Gram</option><option value="liter">Liter</option><option value="ml">Mililiter (ml)</option><option value="pcs">Buah / pcs</option><option value="botol">Botol</option><option value="ikat">Ikat</option><option value="pack">Pack</option><option value="dus">Dus</option></select></label>
+        <label className="field"><span>Satuan alternatif (opsional)</span><input maxLength={30} value={alternateUnit} onChange={e => setAlternateUnit(e.target.value)} placeholder="Contoh: kg, dus, botol" /></label>
+        <label className="field"><span>Konversi ke satuan dasar</span><input type="number" min="0.0001" step="0.0001" value={alternateFactor} onChange={e => setAlternateFactor(e.target.value)} disabled={!alternateUnit.trim()} /><small>1 {alternateUnit.trim() || 'satuan alternatif'} = {alternateUnit.trim() ? alternateFactor || '…' : '—'} {baseUnit}</small></label>
         <label className="field"><span>Batas minimum stok</span><input required type="number" min="0" step="0.001" value={reorderLevel} onChange={e => setReorderLevel(e.target.value)} /></label>
         {editingIngredient && <label className="field field-check"><input type="checkbox" checked={ingredientActive} onChange={e => setIngredientActive(e.target.checked)} /><span>Bahan aktif</span></label>}
       </div>
@@ -757,7 +776,7 @@ function StockModule({ profile, currentUserId }: { profile: Profile | null; curr
             const low = item.is_active && qty <= Number(item.reorder_level)
             return <tr key={item.id}>
               <td><strong>{item.name}</strong><small>{item.code || 'Tanpa kode'}</small></td>
-              <td>{item.base_unit}</td>
+              <td>{item.base_unit}{item.alternate_unit && <small>1 {item.alternate_unit} = {quantity(Number(item.alternate_factor || 0))} {item.base_unit}</small>}</td>
               <td><strong>{quantity(qty)} {item.base_unit}</strong>{balance && Number(balance.average_unit_cost) > 0 && <small>Rata-rata {money(Number(balance.average_unit_cost))}/{item.base_unit}</small>}</td>
               <td>{quantity(Number(item.reorder_level))} {item.base_unit}</td>
               <td><span className={`status-tag ${!item.is_active ? 'inactive' : low ? 'inactive' : 'active'}`}>{!item.is_active ? 'Nonaktif' : low ? 'Stok rendah' : 'Aktif'}</span></td>
@@ -774,7 +793,7 @@ function StockModule({ profile, currentUserId }: { profile: Profile | null; curr
         : <table className="users-table"><thead><tr><th>Waktu</th><th>Bahan</th><th>Jenis</th><th>Perubahan</th><th>Catatan</th></tr></thead>
           <tbody>{movements.map(move => {
             const item = ingredients.find(i => i.id === move.ingredient_id)
-            return <tr key={move.id}><td>{new Date(move.created_at).toLocaleString('id-ID')}</td><td><strong>{item?.name || 'Bahan tidak ditemukan'}</strong></td><td>{movementLabel(move.kind)}</td><td><strong>{Number(move.quantity_delta) > 0 ? '+' : ''}{quantity(Number(move.quantity_delta))} {item?.base_unit || ''}</strong></td><td>{move.note || '—'}</td></tr>
+            return <tr key={move.id}><td>{new Date(move.created_at).toLocaleString('id-ID')}</td><td><strong>{item?.name || 'Bahan tidak ditemukan'}</strong></td><td>{movementLabel(move.kind)}</td><td><strong>{Number(move.quantity_delta) > 0 ? '+' : ''}{quantity(Number(move.quantity_delta))} {item?.base_unit || ''}</strong>{move.input_quantity != null && move.input_unit && <small>Input: {quantity(Number(move.input_quantity))} {move.input_unit}{Number(move.conversion_factor || 1) !== 1 ? ` × ${quantity(Number(move.conversion_factor))}` : ''}</small>}</td><td>{move.note || '—'}</td></tr>
           })}</tbody>
         </table>}
     </div>
