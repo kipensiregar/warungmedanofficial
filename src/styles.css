@@ -161,3 +161,234 @@
   .permission-grid { grid-template-columns: minmax(0, 1fr); }
   .permission-editor-heading { gap: 10px; }
 }
+
+
+/* Laporan Stok & Nilai Persediaan — Warung Medan CT Catering
+   Tempelkan di BAGIAN PALING BAWAH src/styles.css */
+.stock-page {
+  --report-ink: #173b31;
+  --report-muted: #687b73;
+  --report-border: #dce8e0;
+  --report-soft: #f5f8f5;
+  display: flex;
+  flex-direction: column;
+  gap: 22px;
+  width: 100%;
+  max-width: 1440px;
+  margin: 0 auto;
+  color: var(--report-ink);
+}
+.stock-page *,
+.stock-page *::before,
+.stock-page *::after { box-sizing: border-box; }
+.stock-page .page-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  flex-wrap: wrap;
+  margin: 0;
+}
+.stock-page .page-heading h1 {
+  margin: 5px 0 8px;
+  font-size: clamp(1.65rem, 2.3vw, 2.25rem);
+  line-height: 1.2;
+  letter-spacing: -0.035em;
+  color: #183a30;
+}
+.stock-page .eyebrow {
+  margin: 0 0 8px;
+  color: #7a9186;
+  font-size: .73rem;
+  font-weight: 800;
+  letter-spacing: .15em;
+}
+.stock-page .muted {
+  color: var(--report-muted);
+  line-height: 1.55;
+  font-size: .92rem;
+}
+.stock-page .page-heading .muted { max-width: 760px; margin: 0; }
+.stock-page .secondary-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 9px;
+  min-height: 44px;
+  padding: 10px 17px;
+  border: 1px solid var(--report-border);
+  border-radius: 12px;
+  background: #fff;
+  color: #214b3d;
+  font-weight: 700;
+  cursor: pointer;
+  transition: background .15s ease, border-color .15s ease, transform .15s ease;
+}
+.stock-page .secondary-button:hover { background: #edf5ef; border-color: #bfd5c7; }
+.stock-page .secondary-button:disabled { opacity: .55; cursor: wait; }
+.stock-page .user-form-grid {
+  display: grid;
+  grid-template-columns: minmax(240px, 420px);
+  gap: 14px;
+  padding: 17px 19px;
+  background: #fff;
+  border: 1px solid var(--report-border);
+  border-radius: 16px;
+}
+.stock-page .field { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.stock-page .field > span { color: #294b3e; font-size: .9rem; font-weight: 750; }
+.stock-page select,
+.stock-page input {
+  width: 100%;
+  min-width: 0;
+  min-height: 44px;
+  padding: 10px 12px;
+  border: 1px solid #d5e2d9;
+  border-radius: 10px;
+  background: #fff;
+  color: #193c31;
+  font: inherit;
+  outline: none;
+}
+.stock-page select:focus,
+.stock-page input:focus { border-color: #4f8c70; box-shadow: 0 0 0 3px rgba(79,140,112,.13); }
+.stock-page .summary-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 16px;
+}
+.stock-page .summary-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+  padding: 21px 22px;
+  border: 1px solid var(--report-border);
+  border-radius: 17px;
+  background: linear-gradient(145deg, #fff 0%, #f7faf7 100%);
+  box-shadow: 0 5px 18px rgba(27, 61, 45, .035);
+}
+.stock-page .summary-card > span {
+  color: #61766b;
+  font-size: .86rem;
+  font-weight: 700;
+}
+.stock-page .summary-card strong {
+  color: #163f31;
+  font-size: clamp(1.35rem, 2vw, 1.85rem);
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+  font-variant-numeric: tabular-nums;
+}
+.stock-page .summary-card small { color: #7a8a81; line-height: 1.45; }
+.stock-page .panel {
+  min-width: 0;
+  overflow: hidden;
+  padding: 22px;
+  border: 1px solid var(--report-border);
+  border-radius: 17px;
+  background: #fff;
+  box-shadow: 0 5px 18px rgba(27, 61, 45, .035);
+}
+.stock-page .section-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 17px;
+}
+.stock-page .section-heading h2 {
+  margin: 0 0 6px;
+  color: #1b4033;
+  font-size: 1.12rem;
+  line-height: 1.35;
+}
+.stock-page .section-heading p { margin: 0; }
+.stock-page .table-wrap {
+  width: 100%;
+  overflow-x: auto;
+  border: 1px solid #e4ece6;
+  border-radius: 12px;
+  -webkit-overflow-scrolling: touch;
+}
+.stock-page table {
+  width: 100%;
+  min-width: 700px;
+  border-collapse: separate;
+  border-spacing: 0;
+  background: #fff;
+  font-size: .9rem;
+}
+.stock-page thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  padding: 13px 15px;
+  background: #edf4ef;
+  color: #355a49;
+  font-size: .78rem;
+  font-weight: 800;
+  text-align: left;
+  white-space: nowrap;
+  border-bottom: 1px solid #dbe7de;
+}
+.stock-page tbody td {
+  padding: 14px 15px;
+  color: #425b4f;
+  line-height: 1.45;
+  vertical-align: middle;
+  border-bottom: 1px solid #edf1ee;
+}
+.stock-page tbody tr:last-child td { border-bottom: 0; }
+.stock-page tbody tr:nth-child(even) { background: #fbfcfb; }
+.stock-page tbody tr:hover { background: #f2f8f3; }
+.stock-page tbody td strong { color: #1d4435; }
+.stock-page tbody td:nth-child(3),
+.stock-page tbody td:nth-child(4),
+.stock-page tbody td:nth-child(5) { font-variant-numeric: tabular-nums; }
+.stock-page .phase-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 5px 9px;
+  border: 1px solid #d8e8dc;
+  border-radius: 999px;
+  background: #eef7f0;
+  color: #356447;
+  font-size: .75rem;
+  font-weight: 800;
+  white-space: nowrap;
+}
+.stock-page tbody tr:has(.phase-pill:first-child) .phase-pill {
+  background: #fff5e8;
+  border-color: #f0dfc1;
+  color: #91621d;
+}
+.stock-page .form-message {
+  padding: 13px 15px;
+  border: 1px solid #f0d1c9;
+  border-radius: 12px;
+  background: #fff5f2;
+  color: #8b382a;
+  line-height: 1.5;
+}
+.stock-page > .muted { margin: -5px 0 0; font-size: .8rem; }
+@media (max-width: 900px) {
+  .stock-page .summary-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .stock-page .summary-card:last-child { grid-column: 1 / -1; }
+  .stock-page .panel { padding: 17px; }
+}
+@media (max-width: 600px) {
+  .stock-page { gap: 16px; }
+  .stock-page .page-heading { align-items: stretch; }
+  .stock-page .page-heading .secondary-button { width: 100%; }
+  .stock-page .summary-grid { grid-template-columns: 1fr; gap: 10px; }
+  .stock-page .summary-card:last-child { grid-column: auto; }
+  .stock-page .summary-card { padding: 16px; }
+  .stock-page .summary-card strong { font-size: 1.45rem; }
+  .stock-page .user-form-grid { grid-template-columns: minmax(0, 1fr); padding: 14px; }
+  .stock-page .panel { padding: 13px; border-radius: 13px; }
+  .stock-page .section-heading h2 { font-size: 1rem; }
+  .stock-page table { min-width: 680px; font-size: .84rem; }
+  .stock-page thead th, .stock-page tbody td { padding: 11px 12px; }
+}
+
