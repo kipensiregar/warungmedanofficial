@@ -1018,6 +1018,7 @@ function StocktakeModule({ profile, currentUserId }: { profile: Profile | null; 
   const [headers, setHeaders] = useState<StocktakeHeader[]>([])
   const [detail, setDetail] = useState<StocktakeHeader | null>(null)
   const [detailItems, setDetailItems] = useState<StocktakeItemRow[]>([])
+  const [detailUnitCosts, setDetailUnitCosts] = useState<Record<string, number>>({})
   const [reviewNote, setReviewNote] = useState('')
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
@@ -1062,11 +1063,38 @@ function StocktakeModule({ profile, currentUserId }: { profile: Profile | null; 
   async function openDetail(header: StocktakeHeader) {
     if (!supabase) return
     setError(''); setSuccess(''); setDetail(header); setReviewNote('')
-    const { data, error: e } = await supabase.from('stocktake_items')
+    setDetailItems([]); setDetailUnitCosts({})
+
+    const { data, error: itemsError } = await supabase.from('stocktake_items')
       .select('id,stocktake_id,ingredient_id,system_quantity,counted_base_quantity,variance_quantity,base_unit,input_quantity,input_unit,conversion_factor')
       .eq('stocktake_id', header.id).order('created_at')
-    if (e) { setError(`Gagal memuat rincian opname: ${e.message}`); setDetailItems([]) }
-    else setDetailItems((data || []) as StocktakeItemRow[])
+
+    if (itemsError) {
+      setError(`Gagal memuat rincian opname: ${itemsError.message}`)
+      return
+    }
+
+    const rows = (data || []) as StocktakeItemRow[]
+    setDetailItems(rows)
+
+    // Nilai selisih adalah estimasi berdasarkan biaya rata-rata yang tersimpan
+    // pada saldo unit saat detail dibuka; tidak mengubah data stok/keuangan.
+    const { data: balances, error: balancesError } = await supabase
+      .from('inventory_balances')
+      .select('ingredient_id,average_unit_cost')
+      .eq('unit_id', header.unit_id)
+
+    if (balancesError) {
+      setError(`Rincian opname dimuat, tetapi nilai selisih tidak tersedia: ${balancesError.message}`)
+      return
+    }
+
+    const costs: Record<string, number> = {}
+    for (const balance of balances || []) {
+      const cost = Number(balance.average_unit_cost || 0)
+      costs[balance.ingredient_id] = Number.isFinite(cost) && cost >= 0 ? cost : 0
+    }
+    setDetailUnitCosts(costs)
   }
 
   function getStocktakeFactor(item: Ingredient, inputUnit: string): number {
@@ -1251,7 +1279,9 @@ function StocktakeModule({ profile, currentUserId }: { profile: Profile | null; 
           <td><strong>{ingredientName(item.ingredient_id)}</strong><small>Input: {quantity(Number(item.input_quantity))} {item.input_unit}</small></td>
           <td>{quantity(Number(item.system_quantity))} {item.base_unit}</td><td>{quantity(Number(item.counted_base_quantity))} {item.base_unit}</td>
           <td><strong>{delta>0?'+':''}{quantity(delta)} {item.base_unit}</strong><small>{delta<0?'Kurang dari saldo sistem':delta>0?'Lebih dari saldo sistem':'Sesuai'}</small></td>
-          <td>{'—'}<small>Nilai rupiah belum dihitung pada tampilan ini</small></td>
+          <td>{detailUnitCosts[item.ingredient_id] != null
+            ? <><strong>{delta > 0 ? '+' : delta < 0 ? '−' : ''}{money(Math.abs(delta) * detailUnitCosts[item.ingredient_id])}</strong><small>Estimasi berdasarkan biaya rata-rata</small></>
+            : <><strong>—</strong><small>Biaya rata-rata tidak tersedia</small></>}</td>
         </tr>})}</tbody></table></div>
       {detail.status === 'pending' && isOwner && <form onSubmit={e=>{e.preventDefault();void review(true)}} className="user-form">
         <label className="field"><span>Catatan pemeriksaan Owner (wajib)</span><textarea required minLength={3} value={reviewNote} onChange={e=>setReviewNote(e.target.value)} placeholder="Contoh: hasil hitung fisik sudah diverifikasi oleh penanggung jawab unit."/></label>
