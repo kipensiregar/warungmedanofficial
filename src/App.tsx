@@ -1069,33 +1069,100 @@ function StocktakeModule({ profile, currentUserId }: { profile: Profile | null; 
     else setDetailItems((data || []) as StocktakeItemRow[])
   }
 
+  function getStocktakeFactor(item: Ingredient, inputUnit: string): number {
+    const normalizedUnit = inputUnit.trim().toLowerCase()
+    if (!normalizedUnit) return 0
+    if (normalizedUnit === item.base_unit.trim().toLowerCase()) return 1
+
+    const configuredUnit = ingredientUnits.find(unit =>
+      unit.ingredient_id === item.id &&
+      unit.unit_name.trim().toLowerCase() === normalizedUnit
+    )
+    if (configuredUnit) {
+      const factor = Number(configuredUnit.factor_to_base)
+      return Number.isFinite(factor) && factor > 0 ? factor : 0
+    }
+
+    if (item.alternate_unit && normalizedUnit === item.alternate_unit.trim().toLowerCase()) {
+      const factor = Number(item.alternate_factor)
+      return Number.isFinite(factor) && factor > 0 ? factor : 0
+    }
+    return 0
+  }
+
   async function submitOpname(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
-    if (!supabase || !unitId) return
-    const items = ingredients.flatMap(item => {
+    if (!supabase || !unitId) {
+      setError('Pilih unit stok sebelum mengajukan opname.')
+      return
+    }
+
+    const items: {
+      ingredient_id: string
+      input_quantity: number
+      input_unit: string
+      conversion_factor: number
+      base_unit: string
+    }[] = []
+
+    for (const item of ingredients) {
       const row = draft[item.id]
-      if (!row || row.input_quantity.trim() === '') return []
+      if (!row || row.input_quantity.trim() === '') continue
+
       const inputQty = Number(row.input_quantity)
-      const inputUnit = row.input_unit || item.base_unit
-      const factor = Number(ingredientUnits.find(unit => unit.ingredient_id === item.id && unit.unit_name.toLowerCase() === inputUnit.toLowerCase())?.factor_to_base || 0)
-      if (!Number.isFinite(inputQty) || inputQty < 0 || !Number.isFinite(factor) || factor <= 0) return []
-      return [{ ingredient_id: item.id, input_quantity: inputQty, input_unit: inputUnit, conversion_factor: factor, base_unit: item.base_unit }]
-    })
-    if (!items.length) { setError('Isi jumlah fisik minimal satu bahan. Gunakan 0 jika stok fisiknya benar-benar kosong.'); return }
-    const invalid = items.find(x => !Number.isFinite(x.input_quantity) || x.input_quantity < 0 || x.conversion_factor <= 0)
-    if (invalid) { setError('Jumlah atau konversi tidak valid.'); return }
-    setSaving(true); setError(''); setSuccess('')
-    const { data, error: e } = await supabase.rpc('submit_stocktake', {
-      p_unit_id: unitId, p_items: items, p_notes: notes.trim() || null,
-    })
-    if (e) setError(`Pengajuan opname gagal: ${e.message}`)
-    else {
+      const inputUnit = row.input_unit.trim() || item.base_unit
+      if (!Number.isFinite(inputQty) || inputQty < 0) {
+        setError(`Jumlah fisik untuk ${item.name} tidak valid. Masukkan angka nol atau lebih.`)
+        return
+      }
+
+      const factor = getStocktakeFactor(item, inputUnit)
+      if (!Number.isFinite(factor) || factor <= 0) {
+        setError(`Konversi satuan untuk ${item.name} (${inputUnit}) belum valid. Periksa satuan dasar atau konversi bahan di Stok Bahan Baku.`)
+        return
+      }
+
+      items.push({
+        ingredient_id: item.id,
+        input_quantity: inputQty,
+        input_unit: inputUnit,
+        conversion_factor: factor,
+        base_unit: item.base_unit,
+      })
+    }
+
+    if (!items.length) {
+      setError('Isi jumlah fisik minimal satu bahan. Gunakan 0 jika stok fisiknya benar-benar kosong.')
+      return
+    }
+
+    setSaving(true)
+    setError('')
+    setSuccess('')
+    try {
+      const { data, error: submitError } = await supabase.rpc('submit_stocktake', {
+        p_unit_id: unitId,
+        p_items: items,
+        p_notes: notes.trim() || null,
+      })
+      if (submitError) {
+        setError(`Pengajuan opname gagal: ${submitError.message}`)
+        return
+      }
+
       setSuccess(`Pengajuan opname berhasil dibuat (${String(data).slice(0, 8)}…). Saldo belum berubah sampai Owner menyetujui.`)
       setNotes('')
-      setDraft(Object.fromEntries(ingredients.map(item => [item.id, { ingredient_id: item.id, input_quantity: '', input_unit: item.base_unit }])))
+      setDraft(Object.fromEntries(ingredients.map(item => [item.id, {
+        ingredient_id: item.id,
+        input_quantity: '',
+        input_unit: item.base_unit,
+      }])))
       await loadData()
+    } catch (err) {
+      setError(`Pengajuan opname gagal: ${err instanceof Error ? err.message : 'Terjadi kesalahan yang tidak diketahui.'}`)
+    } finally {
+      setSaving(false)
     }
-    setSaving(false)
   }
 
   async function review(approve: boolean) {
@@ -1153,8 +1220,16 @@ function StocktakeModule({ profile, currentUserId }: { profile: Profile | null; 
         <table className="users-table"><thead><tr><th>Bahan</th><th>Satuan hitung</th><th>Jumlah fisik</th><th>Konversi ke stok dasar</th></tr></thead>
           <tbody>{ingredients.map(item => {
             const row = draft[item.id] || { ingredient_id: item.id, input_quantity: '', input_unit: item.base_unit }
-            const availableUnits = ingredientUnits.filter(unit => unit.ingredient_id === item.id)
-            const factor = Number(availableUnits.find(unit => unit.unit_name.toLowerCase() === row.input_unit.toLowerCase())?.factor_to_base || 0)
+            const availableUnits: IngredientUnitOption[] = [
+              { ingredient_id: item.id, unit_name: item.base_unit, factor_to_base: 1, is_active: true },
+              ...(item.alternate_unit && Number(item.alternate_factor) > 0
+                ? [{ ingredient_id: item.id, unit_name: item.alternate_unit, factor_to_base: Number(item.alternate_factor), is_active: true }]
+                : []),
+              ...ingredientUnits.filter(unit => unit.ingredient_id === item.id),
+            ].filter((unit, index, all) =>
+              all.findIndex(candidate => candidate.unit_name.trim().toLowerCase() === unit.unit_name.trim().toLowerCase()) === index
+            )
+            const factor = getStocktakeFactor(item, row.input_unit)
             return <tr key={item.id}><td><strong>{item.name}</strong><small>Stok dasar: {item.base_unit}</small></td>
               <td><select value={row.input_unit} onChange={e => setDraft(prev => ({...prev,[item.id]:{...row,input_unit:e.target.value}}))}>
                 {availableUnits.map(unit => <option key={unit.unit_name} value={unit.unit_name}>{unit.unit_name}</option>)}
