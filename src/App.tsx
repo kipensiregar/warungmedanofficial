@@ -1018,6 +1018,7 @@ function StocktakeModule({ profile, currentUserId }: { profile: Profile | null; 
   const [headers, setHeaders] = useState<StocktakeHeader[]>([])
   const [detail, setDetail] = useState<StocktakeHeader | null>(null)
   const [detailItems, setDetailItems] = useState<StocktakeItemRow[]>([])
+  const [detailUnitCosts, setDetailUnitCosts] = useState<Record<string, number>>({})
   const [reviewNote, setReviewNote] = useState('')
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
@@ -1062,40 +1063,134 @@ function StocktakeModule({ profile, currentUserId }: { profile: Profile | null; 
   async function openDetail(header: StocktakeHeader) {
     if (!supabase) return
     setError(''); setSuccess(''); setDetail(header); setReviewNote('')
-    const { data, error: e } = await supabase.from('stocktake_items')
+    setDetailItems([]); setDetailUnitCosts({})
+
+    const { data, error: itemsError } = await supabase.from('stocktake_items')
       .select('id,stocktake_id,ingredient_id,system_quantity,counted_base_quantity,variance_quantity,base_unit,input_quantity,input_unit,conversion_factor')
       .eq('stocktake_id', header.id).order('created_at')
-    if (e) { setError(`Gagal memuat rincian opname: ${e.message}`); setDetailItems([]) }
-    else setDetailItems((data || []) as StocktakeItemRow[])
+
+    if (itemsError) {
+      setError(`Gagal memuat rincian opname: ${itemsError.message}`)
+      return
+    }
+
+    const rows = (data || []) as StocktakeItemRow[]
+    setDetailItems(rows)
+
+    // Nilai selisih adalah estimasi berdasarkan biaya rata-rata yang tersimpan
+    // pada saldo unit saat detail dibuka; tidak mengubah data stok/keuangan.
+    const { data: balances, error: balancesError } = await supabase
+      .from('inventory_balances')
+      .select('ingredient_id,average_unit_cost')
+      .eq('unit_id', header.unit_id)
+
+    if (balancesError) {
+      setError(`Rincian opname dimuat, tetapi nilai selisih tidak tersedia: ${balancesError.message}`)
+      return
+    }
+
+    const costs: Record<string, number> = {}
+    for (const balance of balances || []) {
+      const cost = Number(balance.average_unit_cost || 0)
+      costs[balance.ingredient_id] = Number.isFinite(cost) && cost >= 0 ? cost : 0
+    }
+    setDetailUnitCosts(costs)
+  }
+
+  function getStocktakeFactor(item: Ingredient, inputUnit: string): number {
+    const normalizedUnit = inputUnit.trim().toLowerCase()
+    if (!normalizedUnit) return 0
+    if (normalizedUnit === item.base_unit.trim().toLowerCase()) return 1
+
+    const configuredUnit = ingredientUnits.find(unit =>
+      unit.ingredient_id === item.id &&
+      unit.unit_name.trim().toLowerCase() === normalizedUnit
+    )
+    if (configuredUnit) {
+      const factor = Number(configuredUnit.factor_to_base)
+      return Number.isFinite(factor) && factor > 0 ? factor : 0
+    }
+
+    if (item.alternate_unit && normalizedUnit === item.alternate_unit.trim().toLowerCase()) {
+      const factor = Number(item.alternate_factor)
+      return Number.isFinite(factor) && factor > 0 ? factor : 0
+    }
+    return 0
   }
 
   async function submitOpname(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
-    if (!supabase || !unitId) return
-    const items = ingredients.flatMap(item => {
+    if (!supabase || !unitId) {
+      setError('Pilih unit stok sebelum mengajukan opname.')
+      return
+    }
+
+    const items: {
+      ingredient_id: string
+      input_quantity: number
+      input_unit: string
+      conversion_factor: number
+      base_unit: string
+    }[] = []
+
+    for (const item of ingredients) {
       const row = draft[item.id]
-      if (!row || row.input_quantity.trim() === '') return []
+      if (!row || row.input_quantity.trim() === '') continue
+
       const inputQty = Number(row.input_quantity)
-      const inputUnit = row.input_unit || item.base_unit
-      const factor = Number(ingredientUnits.find(unit => unit.ingredient_id === item.id && unit.unit_name.toLowerCase() === inputUnit.toLowerCase())?.factor_to_base || 0)
-      if (!Number.isFinite(inputQty) || inputQty < 0 || !Number.isFinite(factor) || factor <= 0) return []
-      return [{ ingredient_id: item.id, input_quantity: inputQty, input_unit: inputUnit, conversion_factor: factor, base_unit: item.base_unit }]
-    })
-    if (!items.length) { setError('Isi jumlah fisik minimal satu bahan. Gunakan 0 jika stok fisiknya benar-benar kosong.'); return }
-    const invalid = items.find(x => !Number.isFinite(x.input_quantity) || x.input_quantity < 0 || x.conversion_factor <= 0)
-    if (invalid) { setError('Jumlah atau konversi tidak valid.'); return }
-    setSaving(true); setError(''); setSuccess('')
-    const { data, error: e } = await supabase.rpc('submit_stocktake', {
-      p_unit_id: unitId, p_items: items, p_notes: notes.trim() || null,
-    })
-    if (e) setError(`Pengajuan opname gagal: ${e.message}`)
-    else {
+      const inputUnit = row.input_unit.trim() || item.base_unit
+      if (!Number.isFinite(inputQty) || inputQty < 0) {
+        setError(`Jumlah fisik untuk ${item.name} tidak valid. Masukkan angka nol atau lebih.`)
+        return
+      }
+
+      const factor = getStocktakeFactor(item, inputUnit)
+      if (!Number.isFinite(factor) || factor <= 0) {
+        setError(`Konversi satuan untuk ${item.name} (${inputUnit}) belum valid. Periksa satuan dasar atau konversi bahan di Stok Bahan Baku.`)
+        return
+      }
+
+      items.push({
+        ingredient_id: item.id,
+        input_quantity: inputQty,
+        input_unit: inputUnit,
+        conversion_factor: factor,
+        base_unit: item.base_unit,
+      })
+    }
+
+    if (!items.length) {
+      setError('Isi jumlah fisik minimal satu bahan. Gunakan 0 jika stok fisiknya benar-benar kosong.')
+      return
+    }
+
+    setSaving(true)
+    setError('')
+    setSuccess('')
+    try {
+      const { data, error: submitError } = await supabase.rpc('submit_stocktake', {
+        p_unit_id: unitId,
+        p_items: items,
+        p_notes: notes.trim() || null,
+      })
+      if (submitError) {
+        setError(`Pengajuan opname gagal: ${submitError.message}`)
+        return
+      }
+
       setSuccess(`Pengajuan opname berhasil dibuat (${String(data).slice(0, 8)}…). Saldo belum berubah sampai Owner menyetujui.`)
       setNotes('')
-      setDraft(Object.fromEntries(ingredients.map(item => [item.id, { ingredient_id: item.id, input_quantity: '', input_unit: item.base_unit }])))
+      setDraft(Object.fromEntries(ingredients.map(item => [item.id, {
+        ingredient_id: item.id,
+        input_quantity: '',
+        input_unit: item.base_unit,
+      }])))
       await loadData()
+    } catch (err) {
+      setError(`Pengajuan opname gagal: ${err instanceof Error ? err.message : 'Terjadi kesalahan yang tidak diketahui.'}`)
+    } finally {
+      setSaving(false)
     }
-    setSaving(false)
   }
 
   async function review(approve: boolean) {
@@ -1153,8 +1248,16 @@ function StocktakeModule({ profile, currentUserId }: { profile: Profile | null; 
         <table className="users-table"><thead><tr><th>Bahan</th><th>Satuan hitung</th><th>Jumlah fisik</th><th>Konversi ke stok dasar</th></tr></thead>
           <tbody>{ingredients.map(item => {
             const row = draft[item.id] || { ingredient_id: item.id, input_quantity: '', input_unit: item.base_unit }
-            const availableUnits = ingredientUnits.filter(unit => unit.ingredient_id === item.id)
-            const factor = Number(availableUnits.find(unit => unit.unit_name.toLowerCase() === row.input_unit.toLowerCase())?.factor_to_base || 0)
+            const availableUnits: IngredientUnitOption[] = [
+              { ingredient_id: item.id, unit_name: item.base_unit, factor_to_base: 1, is_active: true },
+              ...(item.alternate_unit && Number(item.alternate_factor) > 0
+                ? [{ ingredient_id: item.id, unit_name: item.alternate_unit, factor_to_base: Number(item.alternate_factor), is_active: true }]
+                : []),
+              ...ingredientUnits.filter(unit => unit.ingredient_id === item.id),
+            ].filter((unit, index, all) =>
+              all.findIndex(candidate => candidate.unit_name.trim().toLowerCase() === unit.unit_name.trim().toLowerCase()) === index
+            )
+            const factor = getStocktakeFactor(item, row.input_unit)
             return <tr key={item.id}><td><strong>{item.name}</strong><small>Stok dasar: {item.base_unit}</small></td>
               <td><select value={row.input_unit} onChange={e => setDraft(prev => ({...prev,[item.id]:{...row,input_unit:e.target.value}}))}>
                 {availableUnits.map(unit => <option key={unit.unit_name} value={unit.unit_name}>{unit.unit_name}</option>)}
@@ -1176,7 +1279,9 @@ function StocktakeModule({ profile, currentUserId }: { profile: Profile | null; 
           <td><strong>{ingredientName(item.ingredient_id)}</strong><small>Input: {quantity(Number(item.input_quantity))} {item.input_unit}</small></td>
           <td>{quantity(Number(item.system_quantity))} {item.base_unit}</td><td>{quantity(Number(item.counted_base_quantity))} {item.base_unit}</td>
           <td><strong>{delta>0?'+':''}{quantity(delta)} {item.base_unit}</strong><small>{delta<0?'Kurang dari saldo sistem':delta>0?'Lebih dari saldo sistem':'Sesuai'}</small></td>
-          <td>{'—'}<small>Nilai rupiah belum dihitung pada tampilan ini</small></td>
+          <td>{detailUnitCosts[item.ingredient_id] != null
+            ? <><strong>{delta > 0 ? '+' : delta < 0 ? '−' : ''}{money(Math.abs(delta) * detailUnitCosts[item.ingredient_id])}</strong><small>Estimasi berdasarkan biaya rata-rata</small></>
+            : <><strong>—</strong><small>Biaya rata-rata tidak tersedia</small></>}</td>
         </tr>})}</tbody></table></div>
       {detail.status === 'pending' && isOwner && <form onSubmit={e=>{e.preventDefault();void review(true)}} className="user-form">
         <label className="field"><span>Catatan pemeriksaan Owner (wajib)</span><textarea required minLength={3} value={reviewNote} onChange={e=>setReviewNote(e.target.value)} placeholder="Contoh: hasil hitung fisik sudah diverifikasi oleh penanggung jawab unit."/></label>
