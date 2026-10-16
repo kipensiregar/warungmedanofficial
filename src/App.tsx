@@ -1006,6 +1006,11 @@ type StocktakeItemRow = {
   system_quantity: number; counted_base_quantity: number; variance_quantity: number;
   base_unit: string; input_quantity: number; input_unit: string; conversion_factor: number;
 }
+type StocktakeAuditMovement = {
+  id: string; ingredient_id: string; quantity_delta: number; unit_cost: number;
+  note: string | null; created_at: string; input_quantity?: number | null;
+  input_unit?: string | null; conversion_factor?: number | null; base_quantity?: number | null;
+}
 
 function StocktakeModule({ profile, currentUserId }: { profile: Profile | null; currentUserId: string }) {
   const isOwner = profile?.role === 'owner'
@@ -1019,6 +1024,7 @@ function StocktakeModule({ profile, currentUserId }: { profile: Profile | null; 
   const [detail, setDetail] = useState<StocktakeHeader | null>(null)
   const [detailItems, setDetailItems] = useState<StocktakeItemRow[]>([])
   const [detailUnitCosts, setDetailUnitCosts] = useState<Record<string, number>>({})
+  const [detailAuditMovements, setDetailAuditMovements] = useState<StocktakeAuditMovement[]>([])
   const [reviewNote, setReviewNote] = useState('')
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
@@ -1063,7 +1069,7 @@ function StocktakeModule({ profile, currentUserId }: { profile: Profile | null; 
   async function openDetail(header: StocktakeHeader) {
     if (!supabase) return
     setError(''); setSuccess(''); setDetail(header); setReviewNote('')
-    setDetailItems([]); setDetailUnitCosts({})
+    setDetailItems([]); setDetailUnitCosts({}); setDetailAuditMovements([])
 
     const { data, error: itemsError } = await supabase.from('stocktake_items')
       .select('id,stocktake_id,ingredient_id,system_quantity,counted_base_quantity,variance_quantity,base_unit,input_quantity,input_unit,conversion_factor')
@@ -1076,6 +1082,24 @@ function StocktakeModule({ profile, currentUserId }: { profile: Profile | null; 
 
     const rows = (data || []) as StocktakeItemRow[]
     setDetailItems(rows)
+
+    // Jejak penyesuaian dihubungkan lewat source_type/source_id yang ditulis
+    // oleh RPC review_stocktake dalam transaksi persetujuan. Hanya membaca data.
+    if (header.status === 'approved') {
+      const { data: movementData, error: movementError } = await supabase
+        .from('inventory_movements')
+        .select('id,ingredient_id,quantity_delta,unit_cost,note,created_at,input_quantity,input_unit,conversion_factor,base_quantity')
+        .eq('unit_id', header.unit_id)
+        .eq('kind', 'stocktake_adjustment')
+        .eq('source_type', 'stocktake')
+        .eq('source_id', header.id)
+        .order('created_at', { ascending: true })
+      if (movementError) {
+        setError(`Rincian opname dimuat, tetapi jejak koreksi stok gagal dimuat: ${movementError.message}`)
+      } else {
+        setDetailAuditMovements((movementData || []) as StocktakeAuditMovement[])
+      }
+    }
 
     // Nilai selisih adalah estimasi berdasarkan biaya rata-rata yang tersimpan
     // pada saldo unit saat detail dibuka; tidak mengubah data stok/keuangan.
@@ -1283,6 +1307,18 @@ function StocktakeModule({ profile, currentUserId }: { profile: Profile | null; 
             ? <><strong>{delta > 0 ? '+' : delta < 0 ? '−' : ''}{money(Math.abs(delta) * detailUnitCosts[item.ingredient_id])}</strong><small>Estimasi berdasarkan biaya rata-rata</small></>
             : <><strong>—</strong><small>Biaya rata-rata tidak tersedia</small></>}</td>
         </tr>})}</tbody></table></div>
+      {detail.status === 'approved' && <section className="user-form" style={{marginTop:18}}>
+        <div className="user-form-heading"><div><h3>Jejak koreksi stok setelah persetujuan</h3><p className="muted">Riwayat perubahan saldo yang ditautkan ke pengajuan opname ini.</p></div></div>
+        {detailAuditMovements.length ? <div className="users-table-wrap"><table className="users-table"><thead><tr><th>Waktu</th><th>Bahan</th><th>Perubahan saldo</th><th>Biaya/unit</th><th>Catatan sumber</th></tr></thead><tbody>
+          {detailAuditMovements.map(movement => <tr key={movement.id}>
+            <td>{new Date(movement.created_at).toLocaleString('id-ID')}</td>
+            <td><strong>{ingredientName(movement.ingredient_id)}</strong>{movement.input_quantity != null && movement.input_unit && <small>Input: {quantity(Number(movement.input_quantity))} {movement.input_unit}</small>}</td>
+            <td><strong>{Number(movement.quantity_delta) > 0 ? '+' : ''}{quantity(Number(movement.quantity_delta))}</strong>{movement.base_quantity != null && <small>Jumlah dasar: {quantity(Number(movement.base_quantity))}</small>}</td>
+            <td>{money(Number(movement.unit_cost || 0))}</td>
+            <td>{movement.note || 'Koreksi stok opname'}</td>
+          </tr>)}
+        </tbody></table></div> : <p className="users-footnote">Belum ditemukan movement yang tertaut langsung ke ID opname ini. Jika koreksi saldo sudah terjadi, periksa konfigurasi RPC review_stocktake agar menulis inventory_movements dengan source_type = stocktake dan source_id = ID opname.</p>}
+      </section>}
       {detail.status === 'pending' && isOwner && <form onSubmit={e=>{e.preventDefault();void review(true)}} className="user-form">
         <label className="field"><span>Catatan pemeriksaan Owner (wajib)</span><textarea required minLength={3} value={reviewNote} onChange={e=>setReviewNote(e.target.value)} placeholder="Contoh: hasil hitung fisik sudah diverifikasi oleh penanggung jawab unit."/></label>
         <div className="form-actions"><button type="submit" className="primary-button" disabled={saving}>{saving?<LoaderCircle size={16} className="spin"/>:<CheckCircle2 size={16}/>} Setujui & terapkan koreksi</button>
