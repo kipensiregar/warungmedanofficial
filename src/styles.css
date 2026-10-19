@@ -392,3 +392,56 @@
   .stock-page thead th, .stock-page tbody td { padding: 11px 12px; }
 }
 
+
+
+.kitchen-items-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 18px 0;
+}
+
+.kitchen-item-check {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 13px;
+  border: 1px solid var(--border, #dce6df);
+  border-radius: 12px;
+  cursor: pointer;
+}
+
+.kitchen-item-check input {
+  width: 19px;
+  height: 19px;
+  margin-top: 2px;
+  flex-shrink: 0;
+  accent-color: #176b4d;
+}
+
+.kitchen-item-content {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.kitchen-item-content strong {
+  overflow-wrap: anywhere;
+}
+
+.kitchen-item-content span,
+.kitchen-item-content small {
+  color: var(--text-muted, #718078);
+}
+
+.kitchen-item-done {
+  text-decoration: line-through;
+  opacity: 0.65;
+}
+
+.kitchen-item-check > svg {
+  color: #176b4d;
+  flex-shrink: 0;
+}
