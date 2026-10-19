@@ -131,6 +131,8 @@ export default function App() {
               ? <MenuManagementModule />
             : active === 'Kasir & Penjualan' && role && ['owner', 'cashier', 'tenant'].includes(role)
               ? <SalesModule profile={profile} />
+            : active === 'Antrean Dapur' && role && ['owner', 'kitchen', 'tenant'].includes(role)
+            ? <KitchenOrdersModule profile={profile} />
             : active === 'Stok Bahan Baku' && role && ['owner', 'cashier', 'kitchen'].includes(role)
               ? <StockModule profile={profile} currentUserId={session.user.id} />
               : active === 'Stok Opname & Audit' && role
@@ -808,7 +810,7 @@ function StockModule({ profile, currentUserId }: { profile: Profile | null; curr
 
 
 type MenuItem = { id: string; sku: string | null; name: string; category: string | null; sale_price: number; is_active: boolean }
-type SaleCartItem = { menu: MenuItem; quantity: number }
+type SaleCartItem = { menu: MenuItem; quantity: number; notes: string }
 type SaleUnit = { id: string; code: string; name: string; kind: 'branch' | 'bazaar'; is_active: boolean }
 
 function money(value: number) {
@@ -828,6 +830,9 @@ function SalesModule({ profile }: { profile: Profile | null }) {
   const [success, setSuccess] = useState('')
   const [lastReceipt, setLastReceipt] = useState<{ sale_id: string; subtotal?: number; total?: number; status?: string } | null>(null)
   const [search, setSearch] = useState('')
+  const [serviceType, setServiceType] = useState<'dine_in' | 'takeaway'>('dine_in')
+  const [tableNumber, setTableNumber] = useState('')
+  const [orderNotes, setOrderNotes] = useState('')
 
   const isOwner = profile?.role === 'owner'
   const discount = Math.max(0, Number(discountText) || 0)
@@ -868,7 +873,7 @@ function SalesModule({ profile }: { profile: Profile | null }) {
       const existing = current.find(row => row.menu.id === item.id)
       return existing
         ? current.map(row => row.menu.id === item.id ? { ...row, quantity: row.quantity + 1 } : row)
-        : [...current, { menu: item, quantity: 1 }]
+        : [...current, { menu: item, quantity: 1, notes: '' }]
     })
     setSuccess('')
     setLastReceipt(null)
@@ -880,6 +885,36 @@ function SalesModule({ profile }: { profile: Profile | null }) {
       .filter(row => row.quantity > 0))
     setSuccess('')
     setLastReceipt(null)
+  }
+
+  async function submitKitchenOrder() {
+    setError(''); setSuccess(''); setLastReceipt(null)
+    if (!supabase) return
+    if (!selectedUnit) { setError('Pilih unit penjualan terlebih dahulu.'); return }
+    if (!activeUnit) { setError('Unit penjualan tidak ditemukan atau tidak aktif.'); return }
+    if (!cart.length) { setError('Keranjang masih kosong.'); return }
+    if (serviceType === 'dine_in' && !tableNumber.trim()) { setError('Nomor meja wajib diisi untuk makan di tempat.'); return }
+    setSaving(true)
+    const { data, error: rpcError } = await supabase.rpc('submit_kitchen_order', {
+      p_client_request_id: crypto.randomUUID(),
+      p_unit_id: selectedUnit,
+      p_service_type: serviceType,
+      p_table_number: serviceType === 'dine_in' ? tableNumber.trim() : null,
+      p_items: cart.map(row => ({ menu_item_id: row.menu.id, quantity: row.quantity, notes: row.notes.trim() || null })),
+      p_notes: orderNotes.trim() || null,
+    })
+    if (rpcError) {
+      setError(`Pesanan gagal dikirim ke dapur: ${rpcError.message}`)
+      setSaving(false); return
+    }
+    const result = data as { order_id?: string; order_number?: number; status?: string; total?: number } | null
+    if (!result?.order_id) {
+      setError('Server tidak mengembalikan nomor pesanan. Periksa antrean dapur sebelum mencoba lagi.')
+      setSaving(false); return
+    }
+    setSuccess(`Pesanan #${result.order_number ?? result.order_id.slice(0, 8)} berhasil dikirim ke antrean dapur. Pembayaran belum dicatat.`)
+    setCart([]); setDiscountText('0'); setTableNumber(''); setOrderNotes('')
+    setSaving(false)
   }
 
   async function submitSale(event: FormEvent<HTMLFormElement>) {
@@ -957,10 +992,16 @@ function SalesModule({ profile }: { profile: Profile | null }) {
         <div className="sales-panel-heading"><div><h2><ShoppingCart size={19} /> Keranjang</h2><p className="muted">{cart.length} jenis menu</p></div></div>
         {cart.length === 0 ? <div className="sales-cart-empty"><ShoppingCart size={26} /><p>Keranjang masih kosong.</p><span>Pilih menu di sebelah kiri untuk memulai transaksi.</span></div>
           : <div className="sales-cart-list">{cart.map(row => <div className="sales-cart-row" key={row.menu.id}>
-              <div className="sales-cart-info"><strong>{row.menu.name}</strong><span>{money(Number(row.menu.sale_price))} / item</span><b>{money(Number(row.menu.sale_price) * row.quantity)}</b></div>
+              <div className="sales-cart-info"><strong>{row.menu.name}</strong><span>{money(Number(row.menu.sale_price))} / item</span><b>{money(Number(row.menu.sale_price) * row.quantity)}</b><input aria-label={`Catatan ${row.menu.name}`} value={row.notes} onChange={e => setCart(current => current.map(item => item.menu.id === row.menu.id ? { ...item, notes: e.target.value } : item))} placeholder="Catatan menu (opsional)" /></div>
               <div className="sales-quantity"><button type="button" aria-label="Kurangi jumlah" onClick={() => changeQuantity(row.menu.id, -1)}><Minus size={14} /></button><strong>{row.quantity}</strong><button type="button" aria-label="Tambah jumlah" onClick={() => changeQuantity(row.menu.id, 1)}><Plus size={14} /></button><button type="button" className="remove-cart-item" aria-label="Hapus item" onClick={() => setCart(current => current.filter(item => item.menu.id !== row.menu.id))}><Trash2 size={15} /></button></div>
             </div>)}</div>}
         <div className="sales-checkout">
+          <label className="field"><span>Jenis pesanan dapur</span><select value={serviceType} onChange={e => { const next = e.target.value as 'dine_in' | 'takeaway'; setServiceType(next); if (next === 'takeaway') setTableNumber('') }}><option value="dine_in">Makan di tempat</option><option value="takeaway">Bungkus / takeaway</option></select></label>
+          {serviceType === 'dine_in' && <label className="field"><span>Nomor meja</span><input value={tableNumber} onChange={e => setTableNumber(e.target.value)} placeholder="Contoh: Meja 3" maxLength={40} /></label>}
+          <label className="field"><span>Catatan pesanan (opsional)</span><input value={orderNotes} onChange={e => setOrderNotes(e.target.value)} placeholder="Contoh: jangan pedas" maxLength={500} /></label>
+          <button type="button" className="secondary-button sales-submit" onClick={() => void submitKitchenOrder()} disabled={saving || loading || !cart.length || !selectedUnit}>{saving ? <LoaderCircle size={17} className="spin" /> : <ChefHat size={17} />}{saving ? 'Mengirim pesanan…' : 'Kirim Pesanan ke Dapur'}</button>
+          <p className="sales-note"><ChefHat size={14} /> Pesanan dapur belum menjadi transaksi penjualan sampai pembayaran dicatat terpisah.</p>
+          <div className="sales-checkout-divider" />
           <label className="field"><span>Diskon (Rp)</span><input type="number" min="0" step="1" value={discountText} onChange={e => setDiscountText(e.target.value)} /></label>
           <label className="field"><span>Metode pembayaran</span><select value={payment} onChange={e => setPayment(e.target.value as typeof payment)}><option value="cash">Tunai</option><option value="bank_transfer">Transfer bank</option><option value="qris">QRIS</option><option value="debit">Debit</option><option value="other">Lainnya</option></select></label>
           <div className="sales-total-line"><span>Subtotal</span><strong>{money(subtotal)}</strong></div>
@@ -971,6 +1012,86 @@ function SalesModule({ profile }: { profile: Profile | null }) {
         </div>
       </form>
     </div>
+  </div>
+}
+
+type KitchenOrderRow = {
+  id: string; order_number: number; unit_id: string; service_type: 'dine_in' | 'takeaway';
+  table_number: string | null; status: string; payment_status: string; notes: string | null;
+  total: number; created_at: string;
+}
+type KitchenOrderItemRow = { id: string; order_id: string; menu_name_snapshot: string; quantity: number; unit_price: number; line_total: number; item_notes: string | null }
+
+function KitchenOrdersModule({ profile }: { profile: Profile | null }) {
+  const [orders, setOrders] = useState<KitchenOrderRow[]>([])
+  const [items, setItems] = useState<KitchenOrderItemRow[]>([])
+  const [units, setUnits] = useState<SaleUnit[]>([])
+  const [selectedUnit, setSelectedUnit] = useState(profile?.unit_id || '')
+  const [loading, setLoading] = useState(true)
+  const [savingId, setSavingId] = useState('')
+  const [error, setError] = useState('')
+  const [success, setSuccess] = useState('')
+  const isOwner = profile?.role === 'owner'
+
+  async function loadOrders() {
+    if (!supabase) return
+    setLoading(true); setError('')
+    const [orderResult, itemResult, unitResult] = await Promise.all([
+      supabase.from('kitchen_orders').select('id,order_number,unit_id,service_type,table_number,status,payment_status,notes,total,created_at').order('created_at', { ascending: false }).limit(100),
+      supabase.from('kitchen_order_items').select('id,order_id,menu_name_snapshot,quantity,unit_price,line_total,item_notes'),
+      supabase.from('business_units').select('id,code,name,kind,is_active').eq('is_active', true).order('name'),
+    ])
+    if (orderResult.error) setError(`Gagal memuat antrean: ${orderResult.error.message}`)
+    else setOrders((orderResult.data || []) as KitchenOrderRow[])
+    if (itemResult.error) setError(prev => [prev, `Gagal memuat detail menu: ${itemResult.error.message}`].filter(Boolean).join(' · '))
+    else setItems((itemResult.data || []) as KitchenOrderItemRow[])
+    if (unitResult.error) setError(prev => [prev, `Gagal memuat unit: ${unitResult.error.message}`].filter(Boolean).join(' · '))
+    else {
+      const loaded = (unitResult.data || []) as SaleUnit[]
+      setUnits(loaded)
+      if (profile?.unit_id) setSelectedUnit(profile.unit_id)
+      else if (!selectedUnit && loaded.length) setSelectedUnit(loaded[0].id)
+    }
+    setLoading(false)
+  }
+  useEffect(() => { void loadOrders() }, [profile?.unit_id])
+
+  async function updateStatus(order: KitchenOrderRow, status: 'preparing' | 'ready' | 'served' | 'cancelled') {
+    if (!supabase) return
+    setSavingId(order.id); setError(''); setSuccess('')
+    const { error: rpcError } = await supabase.rpc('update_kitchen_order_status', { p_order_id: order.id, p_status: status })
+    if (rpcError) setError(`Status pesanan gagal diperbarui: ${rpcError.message}`)
+    else { setSuccess(`Pesanan #${order.order_number} diperbarui menjadi ${statusLabel(status)}.`); await loadOrders() }
+    setSavingId('')
+  }
+  function statusLabel(status: string) {
+    const labels: Record<string, string> = { queued: 'Antrean', preparing: 'Sedang dimasak', ready: 'Siap', served: 'Disajikan', cancelled: 'Dibatalkan' }
+    return labels[status] || status
+  }
+  const shownOrders = orders.filter(order => (!isOwner || !selectedUnit || order.unit_id === selectedUnit) && order.status !== 'served' && order.status !== 'cancelled')
+  return <div className="users-page">
+    <div className="page-heading"><div><p className="eyebrow">OPERASIONAL DAPUR</p><h1>Antrean Dapur</h1><p className="muted">Pesanan baru masuk tanpa mencatat pendapatan. Perbarui status sesuai proses dapur.</p></div><button type="button" className="secondary-button" onClick={() => void loadOrders()} disabled={loading}><RefreshCw size={16} /> Muat ulang</button></div>
+    {error && <div className="form-message users-alert">{error}</div>}
+    {success && <div className="users-success"><CheckCircle2 size={17} />{success}</div>}
+    {isOwner && <label className="field sales-unit-field"><span>Filter unit</span><select value={selectedUnit} onChange={e => setSelectedUnit(e.target.value)}><option value="">Semua unit</option>{units.map(unit => <option key={unit.id} value={unit.id}>{unit.name}</option>)}</select></label>}
+    {loading ? <div className="users-empty"><LoaderCircle className="spin" size={20} /> Memuat antrean…</div> : shownOrders.length === 0 ? <div className="users-empty">Belum ada pesanan aktif di antrean dapur.</div> : <div className="module-grid">{shownOrders.map(order => {
+      const unit = units.find(u => u.id === order.unit_id)
+      const orderItems = items.filter(item => item.order_id === order.id)
+      return <article className="module-card" key={order.id}>
+        <div className="sales-panel-heading"><div><p className="eyebrow">PESANAN #{order.order_number}</p><h3>{order.service_type === 'dine_in' ? `Makan di tempat · ${order.table_number}` : 'Bungkus / takeaway'}</h3></div><span className="status-tag active">{statusLabel(order.status)}</span></div>
+        <p className="muted">{unit?.name || 'Unit'} · {new Date(order.created_at).toLocaleString('id-ID')}</p>
+        <div>{orderItems.map(item => <div key={item.id} className="sales-cart-row"><div className="sales-cart-info"><strong>{item.quantity} × {item.menu_name_snapshot}</strong><span>{money(Number(item.line_total))}</span>{item.item_notes && <small>Catatan: {item.item_notes}</small>}</div></div>)}</div>
+        {order.notes && <p className="muted">Catatan pesanan: {order.notes}</p>}
+        <div className="sales-grand-total"><span>Total pesanan · {order.payment_status === 'paid' ? 'Lunas' : 'Belum dibayar'}</span><strong>{money(Number(order.total))}</strong></div>
+        <div className="row-actions">
+          {order.status === 'queued' && <button type="button" className="small-action" disabled={savingId === order.id} onClick={() => void updateStatus(order, 'preparing')}>Mulai masak</button>}
+          {(order.status === 'queued' || order.status === 'preparing') && <button type="button" className="small-action" disabled={savingId === order.id} onClick={() => void updateStatus(order, 'ready')}>Tandai siap</button>}
+          {order.status === 'ready' && <button type="button" className="small-action" disabled={savingId === order.id} onClick={() => void updateStatus(order, 'served')}>Tandai disajikan</button>}
+          {profile?.role !== 'kitchen' && <button type="button" className="small-action" disabled={savingId === order.id} onClick={() => { if (window.confirm(`Batalkan pesanan #${order.order_number}?`)) void updateStatus(order, 'cancelled') }}><Ban size={14} /> Batalkan</button>}
+        </div>
+      </article>
+    })}</div>}
+    <p className="users-footnote"><ShieldCheck size={15} /> Pembayaran pesanan belum ditautkan ke fungsi checkout. Jangan anggap pesanan sebagai pendapatan sebelum transaksi penjualan benar-benar dicatat.</p>
   </div>
 }
 
