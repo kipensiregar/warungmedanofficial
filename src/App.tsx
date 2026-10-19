@@ -1020,7 +1020,7 @@ type KitchenOrderRow = {
   table_number: string | null; status: string; payment_status: string; notes: string | null;
   total: number; created_at: string;
 }
-type KitchenOrderItemRow = { id: string; order_id: string; menu_name_snapshot: string; quantity: number; unit_price: number; line_total: number; item_notes: string | null }
+type KitchenOrderItemRow = { id: string; order_id: string; menu_name_snapshot: string; quantity: number; unit_price: number; line_total: number; item_notes: string | null; is_prepared: boolean }
 
 function KitchenOrdersModule({ profile }: { profile: Profile | null }) {
   const [orders, setOrders] = useState<KitchenOrderRow[]>([])
@@ -1038,7 +1038,7 @@ function KitchenOrdersModule({ profile }: { profile: Profile | null }) {
     setLoading(true); setError('')
     const [orderResult, itemResult, unitResult] = await Promise.all([
       supabase.from('kitchen_orders').select('id,order_number,unit_id,service_type,table_number,status,payment_status,notes,total,created_at').order('created_at', { ascending: false }).limit(100),
-      supabase.from('kitchen_order_items').select('id,order_id,menu_name_snapshot,quantity,unit_price,line_total,item_notes'),
+      supabase.from('kitchen_order_items').select('id,order_id,menu_name_snapshot,quantity,unit_price,line_total,item_notes,is_prepared'),
       supabase.from('business_units').select('id,code,name,kind,is_active').eq('is_active', true).order('name'),
     ])
     if (orderResult.error) setError(`Gagal memuat antrean: ${orderResult.error.message}`)
@@ -1064,6 +1064,24 @@ function KitchenOrdersModule({ profile }: { profile: Profile | null }) {
     else { setSuccess(`Pesanan #${order.order_number} diperbarui menjadi ${statusLabel(status)}.`); await loadOrders() }
     setSavingId('')
   }
+  async function togglePrepared(item: KitchenOrderItemRow, prepared: boolean) {
+    if (!supabase) return
+    setSavingId(item.id); setError(''); setSuccess('')
+    const { error: updateError } = await supabase
+      .from('kitchen_order_items')
+      .update({ is_prepared: prepared })
+      .eq('id', item.id)
+
+    if (updateError) {
+      setError(`Checklist gagal disimpan: ${updateError.message}`)
+    } else {
+      setItems(previous => previous.map(row =>
+        row.id === item.id ? { ...row, is_prepared: prepared } : row
+      ))
+      setSuccess(`${item.menu_name_snapshot}: ${prepared ? 'ditandai selesai disiapkan' : 'dikembalikan ke proses persiapan'}.`)
+    }
+    setSavingId('')
+  }
   function statusLabel(status: string) {
     const labels: Record<string, string> = { queued: 'Antrean', preparing: 'Sedang dimasak', ready: 'Siap', served: 'Disajikan', cancelled: 'Dibatalkan' }
     return labels[status] || status
@@ -1080,7 +1098,18 @@ function KitchenOrdersModule({ profile }: { profile: Profile | null }) {
       return <article className="module-card" key={order.id}>
         <div className="sales-panel-heading"><div><p className="eyebrow">PESANAN #{order.order_number}</p><h3>{order.service_type === 'dine_in' ? `Makan di tempat · ${order.table_number}` : 'Bungkus / takeaway'}</h3></div><span className="status-tag active">{statusLabel(order.status)}</span></div>
         <p className="muted">{unit?.name || 'Unit'} · {new Date(order.created_at).toLocaleString('id-ID')}</p>
-        <div>{orderItems.map(item => <div key={item.id} className="sales-cart-row"><div className="sales-cart-info"><strong>{item.quantity} × {item.menu_name_snapshot}</strong><span>{money(Number(item.line_total))}</span>{item.item_notes && <small>Catatan: {item.item_notes}</small>}</div></div>)}</div>
+        <div className="kitchen-items-list">{orderItems.map(item => <label key={item.id} className="kitchen-item-check">
+          <input type="checkbox" checked={Boolean(item.is_prepared)} disabled={savingId === item.id || order.status === 'served' || order.status === 'cancelled'} onChange={event => void togglePrepared(item, event.target.checked)} />
+          <span className="kitchen-item-content">
+            <strong className={item.is_prepared ? 'kitchen-item-done' : ''}>{item.quantity} × {item.menu_name_snapshot}</strong>
+            <span>{money(Number(item.line_total))}</span>
+            {item.item_notes && <small>Catatan: {item.item_notes}</small>}
+          </span>
+          {item.is_prepared && <CheckCircle2 size={18} aria-label="Sudah disiapkan" />}
+        </label>)}</div>
+        <div className="kitchen-preparation-progress"><span>{orderItems.filter(item => item.is_prepared).length} dari {orderItems.length} menu selesai disiapkan</span>
+          <progress value={orderItems.length ? orderItems.filter(item => item.is_prepared).length : 0} max={Math.max(orderItems.length, 1)} aria-label="Progres persiapan menu" />
+        </div>
         {order.notes && <p className="muted">Catatan pesanan: {order.notes}</p>}
         <div className="sales-grand-total"><span>Total pesanan · {order.payment_status === 'paid' ? 'Lunas' : 'Belum dibayar'}</span><strong>{money(Number(order.total))}</strong></div>
         <div className="row-actions">
@@ -1091,7 +1120,7 @@ function KitchenOrdersModule({ profile }: { profile: Profile | null }) {
         </div>
       </article>
     })}</div>}
-    <p className="users-footnote"><ShieldCheck size={15} /> Pembayaran pesanan belum ditautkan ke fungsi checkout. Jangan anggap pesanan sebagai pendapatan sebelum transaksi penjualan benar-benar dicatat.</p>
+    <p className="users-footnote"><ShieldCheck size={15} /> Checklist hanya mencatat progres persiapan menu. Status pembayaran tetap terpisah dan pendapatan hanya dicatat setelah checkout kasir berhasil.</p>
   </div>
 }
 
