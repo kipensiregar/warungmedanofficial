@@ -812,7 +812,7 @@ function StockModule({ profile, currentUserId }: { profile: Profile | null; curr
 type MenuItem = { id: string; sku: string | null; name: string; category: string | null; sale_price: number; is_active: boolean }
 type SaleCartItem = { menu: MenuItem; quantity: number; notes: string }
 type SaleUnit = { id: string; code: string; name: string; kind: 'branch' | 'bazaar'; is_active: boolean }
-type OpenKitchenOrder = { id: string; order_number: number; unit_id: string; service_type: 'dine_in' | 'takeaway'; table_number: string | null; status: string; payment_status: string; subtotal: number; total: number; parent_order_id: string | null; round_number: number; created_at: string }
+type OpenKitchenOrder = { id: string; order_number: number; unit_id: string; service_type: 'dine_in' | 'takeaway'; table_number: string | null; status: string; payment_status: string; subtotal: number; total: number; parent_order_id: string | null; round_number: number; created_at: string; group_subtotal?: number; round_count?: number }
 
 function money(value: number) {
   return new Intl.NumberFormat('id-ID', { style: 'currency', currency: 'IDR', maximumFractionDigits: 0 }).format(value || 0)
@@ -873,20 +873,33 @@ function SalesModule({ profile }: { profile: Profile | null }) {
   useEffect(() => { void loadSalesData() }, [profile?.unit_id])
 
   async function loadOpenKitchenOrders() {
-    if (!supabase || !selectedUnit) { setOpenKitchenOrders([]); return }
+    if (!supabase || !selectedUnit) { setOpenKitchenOrders([]); setSelectedMainOrderId(''); return }
     const { data, error: ordersError } = await supabase
       .from('kitchen_orders')
       .select('id,order_number,unit_id,service_type,table_number,status,payment_status,subtotal,total,parent_order_id,round_number,created_at')
       .eq('unit_id', selectedUnit)
-      .is('parent_order_id', null)
       .eq('payment_status', 'unpaid')
       .neq('status', 'cancelled')
       .order('created_at', { ascending: false })
-      .limit(100)
     if (ordersError) { setError(`Gagal memuat pesanan terbuka: ${ordersError.message}`); return }
-    const loaded = (data || []) as OpenKitchenOrder[]
-    setOpenKitchenOrders(loaded)
-    if (selectedMainOrderId && !loaded.some(order => order.id === selectedMainOrderId)) setSelectedMainOrderId('')
+    const allOpen = (data || []) as OpenKitchenOrder[]
+    const groupTotals = new Map<string, { subtotal: number; count: number }>()
+    for (const row of allOpen) {
+      const rootId = row.parent_order_id || row.id
+      const current = groupTotals.get(rootId) || { subtotal: 0, count: 0 }
+      current.subtotal += Number(row.subtotal ?? row.total ?? 0)
+      current.count += 1
+      groupTotals.set(rootId, current)
+    }
+    const roots = allOpen
+      .filter(row => row.parent_order_id === null)
+      .map(row => ({
+        ...row,
+        group_subtotal: groupTotals.get(row.id)?.subtotal ?? Number(row.subtotal ?? row.total ?? 0),
+        round_count: groupTotals.get(row.id)?.count ?? 1,
+      }))
+    setOpenKitchenOrders(roots)
+    if (selectedMainOrderId && !roots.some(order => order.id === selectedMainOrderId)) setSelectedMainOrderId('')
   }
 
   useEffect(() => { void loadOpenKitchenOrders() }, [selectedUnit])
@@ -958,7 +971,9 @@ function SalesModule({ profile }: { profile: Profile | null }) {
     const order = openKitchenOrders.find(row => row.id === selectedMainOrderId)
     if (!order) { setError('Pilih pesanan utama yang belum dibayar.'); return }
     if (cart.length) { setError('Kosongkan keranjang penjualan biasa sebelum membayar pesanan dapur.'); return }
+    const combinedSubtotal = Number(order.group_subtotal ?? order.subtotal ?? order.total ?? 0)
     if (!Number.isFinite(discount) || discount < 0) { setError('Diskon tidak valid.'); return }
+    if (discount > combinedSubtotal) { setError('Diskon tidak boleh melebihi subtotal seluruh ronde.'); return }
     setSaving(true)
     const { data, error: rpcError } = await supabase.rpc('pay_kitchen_order', {
       p_order_id: order.id,
@@ -974,7 +989,7 @@ function SalesModule({ profile }: { profile: Profile | null }) {
       setError('Server tidak mengembalikan nomor transaksi. Periksa riwayat transaksi sebelum mencoba lagi.')
       setSaving(false); return
     }
-    setLastReceipt({ sale_id: result.sale_id, subtotal: Number(result.subtotal ?? order.subtotal), total: Number(result.total ?? (order.subtotal - discount)), status: result.status })
+    setLastReceipt({ sale_id: result.sale_id, subtotal: Number(result.subtotal ?? combinedSubtotal), total: Number(result.total ?? (combinedSubtotal - discount)), status: result.status })
     setSuccess(result.status === 'already_paid' ? 'Pesanan ini sudah pernah dibayar; transaksi yang sama dikembalikan.' : 'Seluruh ronde pesanan berhasil dibayar dalam satu transaksi.')
     setDiscountText('0')
     await loadOpenKitchenOrders()
@@ -1065,21 +1080,21 @@ function SalesModule({ profile }: { profile: Profile | null }) {
           {orderMode === 'new' ? <>
             <label className="field"><span>Jenis pesanan dapur</span><select value={serviceType} onChange={e => { const next = e.target.value as 'dine_in' | 'takeaway'; setServiceType(next); if (next === 'takeaway') setTableNumber('') }}><option value="dine_in">Makan di tempat</option><option value="takeaway">Bungkus / takeaway</option></select></label>
             {serviceType === 'dine_in' && <label className="field"><span>Nomor meja</span><input value={tableNumber} onChange={e => setTableNumber(e.target.value)} placeholder="Contoh: Meja 3" maxLength={40} /></label>}
-          </> : <label className="field"><span>Pesanan utama / meja</span><select required value={selectedMainOrderId} onChange={e => setSelectedMainOrderId(e.target.value)}><option value="">Pilih pesanan terbuka…</option>{openKitchenOrders.map(order => <option key={order.id} value={order.id}>#{order.order_number} · {order.service_type === 'dine_in' ? `Meja ${order.table_number || '—'}` : 'Takeaway'} · {money(Number(order.total))}</option>)}</select><small>Hanya pesanan utama yang belum dibayar. Ronde baru akan ditautkan ke meja/pesanan ini.</small></label>}
+          </> : <label className="field"><span>Pesanan utama / meja</span><select required value={selectedMainOrderId} onChange={e => setSelectedMainOrderId(e.target.value)}><option value="">Pilih pesanan terbuka…</option>{openKitchenOrders.map(order => <option key={order.id} value={order.id}>#{order.order_number} · {order.service_type === 'dine_in' ? `Meja ${order.table_number || '—'}` : 'Takeaway'} · {money(Number(order.group_subtotal ?? order.total))} · {order.round_count ?? 1} ronde</option>)}</select><small>Hanya pesanan utama yang belum dibayar. Ronde baru akan ditautkan ke meja/pesanan ini.</small></label>}
           <label className="field"><span>Catatan pesanan (opsional)</span><input value={orderNotes} onChange={e => setOrderNotes(e.target.value)} placeholder="Contoh: jangan pedas" maxLength={500} /></label>
           <button type="button" className="secondary-button sales-submit" onClick={() => void submitKitchenOrder()} disabled={saving || loading || !cart.length || !selectedUnit}>{saving ? <LoaderCircle size={17} className="spin" /> : <ChefHat size={17} />}{saving ? 'Mengirim pesanan…' : orderMode === 'round' ? 'Kirim Ronde Tambahan' : 'Kirim Pesanan ke Dapur'}</button>
           <p className="sales-note"><ChefHat size={14} /> Pesanan dapur belum menjadi transaksi penjualan sampai pembayaran dicatat. Ronde tambahan dibayar bersama pesanan utama.</p>
           <div className="sales-checkout-divider" />
           <h3>Bayar pesanan dapur</h3>
-          <label className="field"><span>Pesanan utama belum dibayar</span><select value={selectedMainOrderId} onChange={e => setSelectedMainOrderId(e.target.value)}><option value="">Pilih pesanan untuk checkout…</option>{openKitchenOrders.map(order => <option key={order.id} value={order.id}>#{order.order_number} · {order.service_type === 'dine_in' ? `Meja ${order.table_number || '—'}` : 'Takeaway'}</option>)}</select></label>
+          <label className="field"><span>Pesanan utama belum dibayar</span><select value={selectedMainOrderId} onChange={e => setSelectedMainOrderId(e.target.value)}><option value="">Pilih pesanan untuk checkout…</option>{openKitchenOrders.map(order => <option key={order.id} value={order.id}>#{order.order_number} · {order.service_type === 'dine_in' ? `Meja ${order.table_number || '—'}` : 'Takeaway'} · {money(Number(order.group_subtotal ?? order.total))} · {order.round_count ?? 1} ronde</option>)}</select></label>
           <p className="sales-note">Pembayaran akan mencakup semua ronde yang terhubung ke pesanan utama terpilih.</p>
           <div className="sales-checkout-divider" />
           <label className="field"><span>Diskon (Rp)</span><input type="number" min="0" step="1" value={discountText} onChange={e => setDiscountText(e.target.value)} /></label>
           <label className="field"><span>Metode pembayaran</span><select value={payment} onChange={e => setPayment(e.target.value as typeof payment)}><option value="cash">Tunai</option><option value="bank_transfer">Transfer bank</option><option value="qris">QRIS</option><option value="debit">Debit</option><option value="other">Lainnya</option></select></label>
           <button type="button" className="primary-button sales-submit" onClick={() => void payKitchenTable()} disabled={saving || loading || !selectedMainOrderId || cart.length > 0}>{saving ? <LoaderCircle size={17} className="spin" /> : <Receipt size={17} />}{saving ? 'Memproses pembayaran…' : 'Bayar Semua Ronde'}</button>
-          <div className="sales-total-line"><span>Subtotal</span><strong>{money(subtotal)}</strong></div>
+          <div className="sales-total-line"><span>Subtotal</span><strong>{money(cart.length === 0 && selectedMainOrderId ? Number(openKitchenOrders.find(order => order.id === selectedMainOrderId)?.group_subtotal ?? 0) : subtotal)}</strong></div>
           <div className="sales-total-line"><span>Diskon</span><strong>− {money(discount)}</strong></div>
-          <div className="sales-grand-total"><span>Total</span><strong>{money(total)}</strong></div>
+          <div className="sales-grand-total"><span>Total</span><strong>{money(Math.max(0, (cart.length === 0 && selectedMainOrderId ? Number(openKitchenOrders.find(order => order.id === selectedMainOrderId)?.group_subtotal ?? 0) : subtotal) - discount))}</strong></div>
           <button className="primary-button sales-submit" type="submit" disabled={saving || loading || !cart.length || !selectedUnit}>{saving ? <LoaderCircle size={17} className="spin" /> : <CheckCircle2 size={17} />}{saving ? 'Menyimpan transaksi…' : 'Simpan transaksi'}</button>
           <p className="sales-note"><ShieldCheck size={14} /> Stok bahan baku tidak berkurang otomatis dari penjualan.</p>
         </div>
