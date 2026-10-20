@@ -812,6 +812,7 @@ function StockModule({ profile, currentUserId }: { profile: Profile | null; curr
 type MenuItem = { id: string; sku: string | null; name: string; category: string | null; sale_price: number; is_active: boolean }
 type SaleCartItem = { menu: MenuItem; quantity: number; notes: string }
 type SaleUnit = { id: string; code: string; name: string; kind: 'branch' | 'bazaar'; is_active: boolean }
+type OpenKitchenOrder = { id: string; order_number: number; unit_id: string; service_type: 'dine_in' | 'takeaway'; table_number: string | null; status: string; payment_status: string; subtotal: number; total: number; parent_order_id: string | null; round_number: number; created_at: string }
 
 function money(value: number) {
   return new Intl.NumberFormat('id-ID', { style: 'currency', currency: 'IDR', maximumFractionDigits: 0 }).format(value || 0)
@@ -833,6 +834,9 @@ function SalesModule({ profile }: { profile: Profile | null }) {
   const [serviceType, setServiceType] = useState<'dine_in' | 'takeaway'>('dine_in')
   const [tableNumber, setTableNumber] = useState('')
   const [orderNotes, setOrderNotes] = useState('')
+  const [openKitchenOrders, setOpenKitchenOrders] = useState<OpenKitchenOrder[]>([])
+  const [orderMode, setOrderMode] = useState<'new' | 'round'>('new')
+  const [selectedMainOrderId, setSelectedMainOrderId] = useState('')
 
   const isOwner = profile?.role === 'owner'
   const discount = Math.max(0, Number(discountText) || 0)
@@ -868,6 +872,25 @@ function SalesModule({ profile }: { profile: Profile | null }) {
 
   useEffect(() => { void loadSalesData() }, [profile?.unit_id])
 
+  async function loadOpenKitchenOrders() {
+    if (!supabase || !selectedUnit) { setOpenKitchenOrders([]); return }
+    const { data, error: ordersError } = await supabase
+      .from('kitchen_orders')
+      .select('id,order_number,unit_id,service_type,table_number,status,payment_status,subtotal,total,parent_order_id,round_number,created_at')
+      .eq('unit_id', selectedUnit)
+      .is('parent_order_id', null)
+      .eq('payment_status', 'unpaid')
+      .neq('status', 'cancelled')
+      .order('created_at', { ascending: false })
+      .limit(100)
+    if (ordersError) { setError(`Gagal memuat pesanan terbuka: ${ordersError.message}`); return }
+    const loaded = (data || []) as OpenKitchenOrder[]
+    setOpenKitchenOrders(loaded)
+    if (selectedMainOrderId && !loaded.some(order => order.id === selectedMainOrderId)) setSelectedMainOrderId('')
+  }
+
+  useEffect(() => { void loadOpenKitchenOrders() }, [selectedUnit])
+
   function addItem(item: MenuItem) {
     setCart(current => {
       const existing = current.find(row => row.menu.id === item.id)
@@ -893,27 +916,69 @@ function SalesModule({ profile }: { profile: Profile | null }) {
     if (!selectedUnit) { setError('Pilih unit penjualan terlebih dahulu.'); return }
     if (!activeUnit) { setError('Unit penjualan tidak ditemukan atau tidak aktif.'); return }
     if (!cart.length) { setError('Keranjang masih kosong.'); return }
-    if (serviceType === 'dine_in' && !tableNumber.trim()) { setError('Nomor meja wajib diisi untuk makan di tempat.'); return }
+    if (orderMode === 'round' && !selectedMainOrderId) { setError('Pilih pesanan utama yang masih terbuka.'); return }
+    if (orderMode === 'new' && serviceType === 'dine_in' && !tableNumber.trim()) { setError('Nomor meja wajib diisi untuk makan di tempat.'); return }
     setSaving(true)
-    const { data, error: rpcError } = await supabase.rpc('submit_kitchen_order', {
-      p_client_request_id: crypto.randomUUID(),
-      p_unit_id: selectedUnit,
-      p_service_type: serviceType,
-      p_table_number: serviceType === 'dine_in' ? tableNumber.trim() : null,
-      p_items: cart.map(row => ({ menu_item_id: row.menu.id, quantity: row.quantity, notes: row.notes.trim() || null })),
-      p_notes: orderNotes.trim() || null,
-    })
-    if (rpcError) {
-      setError(`Pesanan gagal dikirim ke dapur: ${rpcError.message}`)
+    const itemsPayload = cart.map(row => ({ menu_item_id: row.menu.id, quantity: row.quantity, notes: row.notes.trim() || null }))
+    const resultCall = orderMode === 'round'
+      ? await supabase.rpc('submit_kitchen_order_round', {
+          p_client_request_id: crypto.randomUUID(),
+          p_parent_order_id: selectedMainOrderId,
+          p_items: itemsPayload,
+          p_notes: orderNotes.trim() || null,
+        })
+      : await supabase.rpc('submit_kitchen_order', {
+          p_client_request_id: crypto.randomUUID(),
+          p_unit_id: selectedUnit,
+          p_service_type: serviceType,
+          p_table_number: serviceType === 'dine_in' ? tableNumber.trim() : null,
+          p_items: itemsPayload,
+          p_notes: orderNotes.trim() || null,
+        })
+    if (resultCall.error) {
+      setError(`Pesanan gagal dikirim ke dapur: ${resultCall.error.message}`)
       setSaving(false); return
     }
-    const result = data as { order_id?: string; order_number?: number; status?: string; total?: number } | null
+    const result = resultCall.data as { order_id?: string; order_number?: number; round_number?: number; status?: string; total?: number } | null
     if (!result?.order_id) {
       setError('Server tidak mengembalikan nomor pesanan. Periksa antrean dapur sebelum mencoba lagi.')
       setSaving(false); return
     }
-    setSuccess(`Pesanan #${result.order_number ?? result.order_id.slice(0, 8)} berhasil dikirim ke antrean dapur. Pembayaran belum dicatat.`)
+    setSuccess(orderMode === 'round'
+      ? `Ronde ${result.round_number ?? ''} (pesanan #${result.order_number ?? result.order_id.slice(0, 8)}) berhasil dikirim. Pembayaran dilakukan bersama pesanan utama.`
+      : `Pesanan #${result.order_number ?? result.order_id.slice(0, 8)} berhasil dikirim ke antrean dapur. Pembayaran belum dicatat.`)
     setCart([]); setDiscountText('0'); setTableNumber(''); setOrderNotes('')
+    await loadOpenKitchenOrders()
+    setSaving(false)
+  }
+
+  async function payKitchenTable() {
+    setError(''); setSuccess(''); setLastReceipt(null)
+    if (!supabase) return
+    const order = openKitchenOrders.find(row => row.id === selectedMainOrderId)
+    if (!order) { setError('Pilih pesanan utama yang belum dibayar.'); return }
+    if (cart.length) { setError('Kosongkan keranjang penjualan biasa sebelum membayar pesanan dapur.'); return }
+    if (!Number.isFinite(discount) || discount < 0) { setError('Diskon tidak valid.'); return }
+    setSaving(true)
+    const { data, error: rpcError } = await supabase.rpc('pay_kitchen_order', {
+      p_order_id: order.id,
+      p_payment_method: payment,
+      p_discount: discount,
+    })
+    if (rpcError) {
+      setError(`Pembayaran pesanan gagal: ${rpcError.message}`)
+      setSaving(false); return
+    }
+    const result = data as { sale_id?: string; subtotal?: number; total?: number; status?: string } | null
+    if (!result?.sale_id) {
+      setError('Server tidak mengembalikan nomor transaksi. Periksa riwayat transaksi sebelum mencoba lagi.')
+      setSaving(false); return
+    }
+    setLastReceipt({ sale_id: result.sale_id, subtotal: Number(result.subtotal ?? order.subtotal), total: Number(result.total ?? (order.subtotal - discount)), status: result.status })
+    setSuccess(result.status === 'already_paid' ? 'Pesanan ini sudah pernah dibayar; transaksi yang sama dikembalikan.' : 'Seluruh ronde pesanan berhasil dibayar dalam satu transaksi.')
+    setDiscountText('0')
+    await loadOpenKitchenOrders()
+    setSelectedMainOrderId('')
     setSaving(false)
   }
 
@@ -958,7 +1023,7 @@ function SalesModule({ profile }: { profile: Profile | null }) {
   return <div className="sales-page">
     <div className="page-heading">
       <div><p className="eyebrow">TRANSAKSI PENJUALAN</p><h1>Kasir & Penjualan</h1><p className="muted">Pilih menu, masukkan jumlah, lalu simpan transaksi ke database.</p></div>
-      <button className="secondary-button" onClick={() => void loadSalesData()} disabled={loading}><RefreshCw size={16} /> Muat ulang</button>
+      <button className="secondary-button" onClick={async () => { await loadSalesData(); await loadOpenKitchenOrders() }} disabled={loading}><RefreshCw size={16} /> Muat ulang</button>
     </div>
     {error && <div className="form-message users-alert">{error}</div>}
     {success && <div className="users-success"><CheckCircle2 size={17} />{success}</div>}
@@ -996,14 +1061,22 @@ function SalesModule({ profile }: { profile: Profile | null }) {
               <div className="sales-quantity"><button type="button" aria-label="Kurangi jumlah" onClick={() => changeQuantity(row.menu.id, -1)}><Minus size={14} /></button><strong>{row.quantity}</strong><button type="button" aria-label="Tambah jumlah" onClick={() => changeQuantity(row.menu.id, 1)}><Plus size={14} /></button><button type="button" className="remove-cart-item" aria-label="Hapus item" onClick={() => setCart(current => current.filter(item => item.menu.id !== row.menu.id))}><Trash2 size={15} /></button></div>
             </div>)}</div>}
         <div className="sales-checkout">
-          <label className="field"><span>Jenis pesanan dapur</span><select value={serviceType} onChange={e => { const next = e.target.value as 'dine_in' | 'takeaway'; setServiceType(next); if (next === 'takeaway') setTableNumber('') }}><option value="dine_in">Makan di tempat</option><option value="takeaway">Bungkus / takeaway</option></select></label>
-          {serviceType === 'dine_in' && <label className="field"><span>Nomor meja</span><input value={tableNumber} onChange={e => setTableNumber(e.target.value)} placeholder="Contoh: Meja 3" maxLength={40} /></label>}
+          <label className="field"><span>Mode pesanan dapur</span><select value={orderMode} onChange={e => setOrderMode(e.target.value as 'new' | 'round')}><option value="new">Pesanan utama baru</option><option value="round">Tambah ronde ke pesanan terbuka</option></select></label>
+          {orderMode === 'new' ? <>
+            <label className="field"><span>Jenis pesanan dapur</span><select value={serviceType} onChange={e => { const next = e.target.value as 'dine_in' | 'takeaway'; setServiceType(next); if (next === 'takeaway') setTableNumber('') }}><option value="dine_in">Makan di tempat</option><option value="takeaway">Bungkus / takeaway</option></select></label>
+            {serviceType === 'dine_in' && <label className="field"><span>Nomor meja</span><input value={tableNumber} onChange={e => setTableNumber(e.target.value)} placeholder="Contoh: Meja 3" maxLength={40} /></label>}
+          </> : <label className="field"><span>Pesanan utama / meja</span><select required value={selectedMainOrderId} onChange={e => setSelectedMainOrderId(e.target.value)}><option value="">Pilih pesanan terbuka…</option>{openKitchenOrders.map(order => <option key={order.id} value={order.id}>#{order.order_number} · {order.service_type === 'dine_in' ? `Meja ${order.table_number || '—'}` : 'Takeaway'} · {money(Number(order.total))}</option>)}</select><small>Hanya pesanan utama yang belum dibayar. Ronde baru akan ditautkan ke meja/pesanan ini.</small></label>}
           <label className="field"><span>Catatan pesanan (opsional)</span><input value={orderNotes} onChange={e => setOrderNotes(e.target.value)} placeholder="Contoh: jangan pedas" maxLength={500} /></label>
-          <button type="button" className="secondary-button sales-submit" onClick={() => void submitKitchenOrder()} disabled={saving || loading || !cart.length || !selectedUnit}>{saving ? <LoaderCircle size={17} className="spin" /> : <ChefHat size={17} />}{saving ? 'Mengirim pesanan…' : 'Kirim Pesanan ke Dapur'}</button>
-          <p className="sales-note"><ChefHat size={14} /> Pesanan dapur belum menjadi transaksi penjualan sampai pembayaran dicatat terpisah.</p>
+          <button type="button" className="secondary-button sales-submit" onClick={() => void submitKitchenOrder()} disabled={saving || loading || !cart.length || !selectedUnit}>{saving ? <LoaderCircle size={17} className="spin" /> : <ChefHat size={17} />}{saving ? 'Mengirim pesanan…' : orderMode === 'round' ? 'Kirim Ronde Tambahan' : 'Kirim Pesanan ke Dapur'}</button>
+          <p className="sales-note"><ChefHat size={14} /> Pesanan dapur belum menjadi transaksi penjualan sampai pembayaran dicatat. Ronde tambahan dibayar bersama pesanan utama.</p>
+          <div className="sales-checkout-divider" />
+          <h3>Bayar pesanan dapur</h3>
+          <label className="field"><span>Pesanan utama belum dibayar</span><select value={selectedMainOrderId} onChange={e => setSelectedMainOrderId(e.target.value)}><option value="">Pilih pesanan untuk checkout…</option>{openKitchenOrders.map(order => <option key={order.id} value={order.id}>#{order.order_number} · {order.service_type === 'dine_in' ? `Meja ${order.table_number || '—'}` : 'Takeaway'}</option>)}</select></label>
+          <p className="sales-note">Pembayaran akan mencakup semua ronde yang terhubung ke pesanan utama terpilih.</p>
           <div className="sales-checkout-divider" />
           <label className="field"><span>Diskon (Rp)</span><input type="number" min="0" step="1" value={discountText} onChange={e => setDiscountText(e.target.value)} /></label>
           <label className="field"><span>Metode pembayaran</span><select value={payment} onChange={e => setPayment(e.target.value as typeof payment)}><option value="cash">Tunai</option><option value="bank_transfer">Transfer bank</option><option value="qris">QRIS</option><option value="debit">Debit</option><option value="other">Lainnya</option></select></label>
+          <button type="button" className="primary-button sales-submit" onClick={() => void payKitchenTable()} disabled={saving || loading || !selectedMainOrderId || cart.length > 0}>{saving ? <LoaderCircle size={17} className="spin" /> : <Receipt size={17} />}{saving ? 'Memproses pembayaran…' : 'Bayar Semua Ronde'}</button>
           <div className="sales-total-line"><span>Subtotal</span><strong>{money(subtotal)}</strong></div>
           <div className="sales-total-line"><span>Diskon</span><strong>− {money(discount)}</strong></div>
           <div className="sales-grand-total"><span>Total</span><strong>{money(total)}</strong></div>
@@ -1018,7 +1091,7 @@ function SalesModule({ profile }: { profile: Profile | null }) {
 type KitchenOrderRow = {
   id: string; order_number: number; unit_id: string; service_type: 'dine_in' | 'takeaway';
   table_number: string | null; status: string; payment_status: string; notes: string | null;
-  total: number; created_at: string;
+  total: number; subtotal?: number; parent_order_id: string | null; round_number: number; created_at: string;
 }
 type KitchenOrderItemRow = { id: string; order_id: string; menu_name_snapshot: string; quantity: number; unit_price: number; line_total: number; item_notes: string | null; is_prepared: boolean }
 
@@ -1037,7 +1110,7 @@ function KitchenOrdersModule({ profile }: { profile: Profile | null }) {
     if (!supabase) return
     setLoading(true); setError('')
     const [orderResult, itemResult, unitResult] = await Promise.all([
-      supabase.from('kitchen_orders').select('id,order_number,unit_id,service_type,table_number,status,payment_status,notes,total,created_at').order('created_at', { ascending: false }).limit(100),
+      supabase.from('kitchen_orders').select('id,order_number,unit_id,service_type,table_number,status,payment_status,notes,subtotal,total,parent_order_id,round_number,created_at').order('created_at', { ascending: false }).limit(100),
       supabase.from('kitchen_order_items').select('id,order_id,menu_name_snapshot,quantity,unit_price,line_total,item_notes,is_prepared'),
       supabase.from('business_units').select('id,code,name,kind,is_active').eq('is_active', true).order('name'),
     ])
@@ -1096,7 +1169,7 @@ function KitchenOrdersModule({ profile }: { profile: Profile | null }) {
       const unit = units.find(u => u.id === order.unit_id)
       const orderItems = items.filter(item => item.order_id === order.id)
       return <article className="module-card" key={order.id}>
-        <div className="sales-panel-heading"><div><p className="eyebrow">PESANAN #{order.order_number}</p><h3>{order.service_type === 'dine_in' ? `Makan di tempat · ${order.table_number}` : 'Bungkus / takeaway'}</h3></div><span className="status-tag active">{statusLabel(order.status)}</span></div>
+        <div className="sales-panel-heading"><div><p className="eyebrow">PESANAN #{order.order_number} · RONDE {order.round_number || 1}</p><h3>{order.service_type === 'dine_in' ? `Makan di tempat · ${order.table_number}` : 'Bungkus / takeaway'}</h3>{order.parent_order_id && <p className="muted">Ronde tambahan dari pesanan utama #{orders.find(parent => parent.id === order.parent_order_id)?.order_number ?? '—'}</p>}</div><span className="status-tag active">{statusLabel(order.status)}</span></div>
         <p className="muted">{unit?.name || 'Unit'} · {new Date(order.created_at).toLocaleString('id-ID')}</p>
         <div className="kitchen-items-list">{orderItems.map(item => <label key={item.id} className="kitchen-item-check">
           <input type="checkbox" checked={Boolean(item.is_prepared)} disabled={savingId === item.id || order.status === 'served' || order.status === 'cancelled'} onChange={event => void togglePrepared(item, event.target.checked)} />
