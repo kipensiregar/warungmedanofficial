@@ -1,0 +1,57 @@
+name: Order Flow SQL Draft Test
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - ".github/workflows/order-flow-sql-test.yml"
+      - "supabase/review-only-migrations/20261021_order_flow_*.sql"
+      - "supabase/order-flow-test/**"
+
+permissions:
+  contents: read
+
+jobs:
+  postgres-order-flow:
+    runs-on: ubuntu-latest
+    env:
+      PGHOST: 127.0.0.1
+      PGPORT: 5432
+      PGUSER: postgres
+      PGDATABASE: order_flow_test
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: order_flow_test
+          POSTGRES_USER: postgres
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d order_flow_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Check PostgreSQL client
+        run: psql --version
+
+      - name: Create schema-only test baseline
+        run: psql -v ON_ERROR_STOP=1 -f supabase/order-flow-test/baseline.sql
+
+      - name: Apply schema draft to disposable database
+        run: psql -v ON_ERROR_STOP=1 -f supabase/review-only-migrations/20261021_order_flow_schema_prerequisites.sql
+
+      - name: Apply RPC draft to disposable database
+        run: psql -v ON_ERROR_STOP=1 -f supabase/review-only-migrations/20261021_order_flow_rpc_draft.sql
+
+      - name: Apply permission draft to disposable database
+        run: psql -v ON_ERROR_STOP=1 -f supabase/review-only-migrations/20261021_order_flow_permissions_draft.sql
+
+      - name: Verify signatures, permissions, snapshots, idempotency, rounds, and payment-function protection
+        run: psql -v ON_ERROR_STOP=1 -f supabase/order-flow-test/assertions.sql

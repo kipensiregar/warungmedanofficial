@@ -1,0 +1,184 @@
+.jarvis-page {
+  --jarvis-ink: #183a30;
+  --jarvis-muted: #718078;
+  --jarvis-border: #e1e9e2;
+  display: grid;
+  gap: 26px;
+  width: 100%;
+  max-width: 1160px;
+  margin: 0 auto;
+  color: var(--jarvis-ink);
+}
+
+.jarvis-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+}
+
+.jarvis-heading .eyebrow { margin: 0 0 8px; }
+.jarvis-heading h1 {
+  margin: 0 0 6px;
+  font: 800 clamp(1.7rem, 3vw, 2.2rem)/1.2 Manrope, sans-serif;
+  letter-spacing: -.045em;
+}
+.jarvis-intro { margin: 0; color: var(--jarvis-muted); font-size: 13px; line-height: 1.6; }
+.jarvis-status, .jarvis-section-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+  padding: 9px 12px;
+  border: 1px solid var(--jarvis-border);
+  border-radius: 999px;
+  background: #fff;
+  color: #5f7166;
+  font-size: 10px;
+  font-weight: 750;
+}
+.jarvis-status-dot { width: 7px; height: 7px; border-radius: 50%; background: #c48a35; }
+
+.jarvis-notice {
+  display: flex;
+  align-items: flex-start;
+  gap: 11px;
+  padding: 14px 16px;
+  border: 1px solid #f0e1bd;
+  border-radius: 12px;
+  background: #fff9ed;
+  color: #86652d;
+}
+.jarvis-notice svg { flex: 0 0 auto; margin-top: 1px; }
+.jarvis-notice p { margin: 0; font-size: 12px; line-height: 1.55; }
+
+.jarvis-section-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 15px;
+  margin-bottom: 14px;
+}
+.jarvis-section-heading h2, .jarvis-chat-heading h2 {
+  margin: 0 0 5px;
+  font: 750 17px/1.3 Manrope, sans-serif;
+  letter-spacing: -.025em;
+}
+.jarvis-section-heading p, .jarvis-chat-heading p { margin: 0; color: var(--jarvis-muted); font-size: 11px; line-height: 1.5; }
+.jarvis-section-tag { padding: 7px 10px; background: #edf4ee; color: #42634e; font-size: 9px; letter-spacing: .08em; }
+.jarvis-report-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 13px; }
+.jarvis-report-card {
+  display: grid;
+  grid-template-columns: 42px minmax(0, 1fr);
+  align-items: start;
+  gap: 13px;
+  min-width: 0;
+  padding: 18px;
+  border: 1px solid var(--jarvis-border);
+  border-radius: 14px;
+  background: #fff;
+}
+.jarvis-card-icon, .jarvis-chat-avatar {
+  display: grid;
+  place-items: center;
+  width: 42px;
+  height: 42px;
+  border-radius: 12px;
+  background: #edf4ee;
+  color: #2e6549;
+}
+.jarvis-card-copy { min-width: 0; }
+.jarvis-card-copy h3 { margin: 1px 0 5px; font-size: 13px; line-height: 1.4; }
+.jarvis-card-copy p { margin: 0; color: var(--jarvis-muted); font-size: 11px; line-height: 1.55; }
+.jarvis-card-status {
+  grid-column: 2;
+  justify-self: start;
+  margin-top: -3px;
+  padding: 5px 8px;
+  border-radius: 6px;
+  background: #f4f6f4;
+  color: #69766e;
+  font-size: 9px;
+  font-weight: 700;
+}
+
+.jarvis-chat {
+  display: grid;
+  gap: 17px;
+  padding: 20px;
+  border: 1px solid var(--jarvis-border);
+  border-radius: 16px;
+  background: #fff;
+}
+.jarvis-chat-heading { display: flex; align-items: center; gap: 12px; }
+.jarvis-chat-avatar { width: 44px; height: 44px; flex: 0 0 auto; border-radius: 13px; background: var(--green); color: #fff; }
+.jarvis-chat-heading h2 { margin-bottom: 4px; }
+.jarvis-chat-sparkle { margin-left: auto; color: #66836f; }
+.jarvis-answer {
+  min-height: 105px;
+  padding: 16px;
+  border: 1px dashed #d5e1d7;
+  border-radius: 12px;
+  background: #f8faf8;
+}
+.jarvis-answer-label { color: #849188; font-size: 9px; font-weight: 800; letter-spacing: .12em; }
+.jarvis-answer p { margin: 12px 0 0; color: var(--jarvis-muted); font-size: 12px; line-height: 1.6; }
+.jarvis-prompt { display: flex; align-items: stretch; gap: 10px; }
+.jarvis-prompt input {
+  flex: 1 1 auto;
+  width: 0;
+  min-width: 0;
+  min-height: 46px;
+  padding: 11px 13px;
+  border: 1px solid #dce5de;
+  border-radius: 10px;
+  outline: none;
+  color: #193c31;
+  font: inherit;
+  font-size: 12px;
+}
+.jarvis-prompt input:focus { border-color: #4f8c70; box-shadow: 0 0 0 3px rgba(79,140,112,.13); }
+.jarvis-prompt button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  flex: 0 0 auto;
+  min-height: 46px;
+  padding: 0 15px;
+  border: 0;
+  border-radius: 10px;
+  background: #e9eee9;
+  color: #728078;
+  font-size: 11px;
+  font-weight: 700;
+  cursor: not-allowed;
+}
+.jarvis-prompt button:disabled { opacity: 1; }
+.jarvis-chat-footnote { margin: -8px 0 0; color: #849188; font-size: 10px; line-height: 1.5; }
+.jarvis-page .sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+@media (max-width: 700px) {
+  .jarvis-page { gap: 21px; }
+  .jarvis-heading { align-items: flex-start; flex-direction: column; }
+  .jarvis-report-grid { grid-template-columns: minmax(0, 1fr); gap: 10px; }
+  .jarvis-report-card { padding: 15px; }
+  .jarvis-chat { padding: 16px; }
+}
+
+@media (max-width: 420px) {
+  .jarvis-section-heading { align-items: flex-start; }
+  .jarvis-prompt { flex-direction: column; }
+  .jarvis-prompt input { width: 100%; }
+  .jarvis-prompt button { width: 100%; }
+}

@@ -1,0 +1,23 @@
+# Dependencies
+node_modules/
+
+# Vite / build output
+dist/
+dist-ssr/
+.vite/
+
+# Logs and coverage
+*.log
+coverage/
+
+# Local environment files (keep the shareable example tracked)
+.env
+.env.*
+!.env.example
+
+# TypeScript build cache
+*.tsbuildinfo
+
+# Local editor and OS files
+.DS_Store
+Thumbs.db

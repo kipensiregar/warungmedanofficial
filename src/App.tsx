@@ -7,8 +7,14 @@ import {
   LogIn, LogOut, Package, ShieldCheck, ShoppingBasket, Store, Users,
   Pencil, UserPlus, RefreshCw, Ban, CheckCircle2, X, LoaderCircle,
   Plus, Minus, Trash2, Receipt, ShoppingCart, Utensils, ClipboardCheck,
+  Sparkles,
 } from 'lucide-react'
 import { isSupabaseConfigured, supabase } from './lib/supabase'
+import JarvisDashboard from './features/jarvis/JarvisDashboard'
+import KitchenOrderComposer from './features/orders/KitchenOrderComposer'
+import KitchenQueue from './features/orders/KitchenQueue'
+import { listKitchenQueue } from './features/orders/kitchen-order-api'
+import type { KitchenQueueOrder } from './features/orders/kitchen-order-api'
 
 type Role = 'owner' | 'cashier' | 'tenant' | 'kitchen'
 type Profile = {
@@ -39,14 +45,18 @@ const deniedPermissions: AppPermissions = { stock_view: false, stock_receive: fa
 const roleLabels: Record<Role, string> = {
   owner: 'Owner', cashier: 'Kasir Cabang', tenant: 'Tim Tenant', kitchen: 'Tim Dapur',
 }
+// Keep order writes disabled until the production RPC definitions, grants, RLS scope,
+// and the review-only migration have been applied and independently verified.
+const KITCHEN_ORDER_BACKEND_READY = false
 const navItems = [
   { label: 'Dashboard', icon: LayoutDashboard, roles: ['owner', 'cashier', 'tenant', 'kitchen'] },
   { label: 'Kasir & Penjualan', icon: ShoppingBasket, roles: ['owner', 'cashier', 'tenant'] },
-  { label: 'Antrean Dapur', icon: ChefHat, roles: ['owner', 'kitchen', 'tenant'] },
+  { label: 'Antrean Dapur', icon: ChefHat, roles: ['owner', 'cashier', 'kitchen', 'tenant'] },
   { label: 'Stok Bahan Baku', icon: Package, roles: ['owner', 'cashier', 'kitchen'] },
   { label: 'Stok Opname & Audit', icon: ClipboardCheck, roles: ['owner', 'cashier', 'tenant', 'kitchen'] },
   { label: 'Keuangan', icon: CircleDollarSign, roles: ['owner'] },
   { label: 'Laporan', icon: BarChart3, roles: ['owner'] },
+  { label: 'Jarvis', icon: Sparkles, roles: ['owner'] },
   { label: 'Pengguna & Unit', icon: Users, roles: ['owner'] },
   { label: 'Manajemen Menu', icon: Utensils, roles: ['owner'] },
 ] as const
@@ -131,12 +141,16 @@ export default function App() {
               ? <MenuManagementModule />
             : active === 'Kasir & Penjualan' && role && ['owner', 'cashier', 'tenant'].includes(role)
               ? <SalesModule profile={profile} />
+            : active === 'Antrean Dapur' && role && ['owner', 'cashier', 'kitchen', 'tenant'].includes(role)
+              ? <KitchenQueue role={role} profileUnitId={profile?.unit_id || null} backendReady={KITCHEN_ORDER_BACKEND_READY} />
             : active === 'Stok Bahan Baku' && role && ['owner', 'cashier', 'kitchen'].includes(role)
               ? <StockModule profile={profile} currentUserId={session.user.id} />
               : active === 'Stok Opname & Audit' && role
                 ? <StocktakeModule profile={profile} currentUserId={session.user.id} />
               : active === 'Laporan' && role === 'owner'
                 ? <StockReportsModule />
+                : active === 'Jarvis' && role === 'owner'
+                  ? <JarvisDashboard />
                 : <ModulePlaceholder title={active} role={role} />}
         {!profile && <div className="notice warning"><ShieldCheck size={18} /><div><strong>Profil akses belum siap.</strong><p>Jangan gunakan akun ini untuk operasional sampai Owner menetapkan profil dan unit yang benar.</p></div></div>}
       </section>
@@ -823,6 +837,10 @@ function SalesModule({ profile }: { profile: Profile | null }) {
   const [payment, setPayment] = useState<'cash' | 'bank_transfer' | 'qris' | 'debit' | 'other'>('cash')
   const [discountText, setDiscountText] = useState('0')
   const [loading, setLoading] = useState(true)
+  const [menuError, setMenuError] = useState('')
+  const [activeKitchenOrders, setActiveKitchenOrders] = useState<KitchenQueueOrder[]>([])
+  const [kitchenOrdersLoading, setKitchenOrdersLoading] = useState(false)
+  const [kitchenOrdersError, setKitchenOrdersError] = useState('')
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
   const [success, setSuccess] = useState('')
@@ -840,6 +858,7 @@ function SalesModule({ profile }: { profile: Profile | null }) {
     if (!supabase) return
     setLoading(true)
     setError('')
+    setMenuError('')
     const menuPromise = supabase.from('menu_items')
       .select('id,sku,name,category,sale_price,is_active')
       .eq('is_active', true)
@@ -849,7 +868,10 @@ function SalesModule({ profile }: { profile: Profile | null }) {
       .eq('is_active', true)
       .order('name')
     const [menuResult, unitResult] = await Promise.all([menuPromise, unitsPromise])
-    if (menuResult.error) setError(`Gagal memuat menu: ${menuResult.error.message}`)
+    if (menuResult.error) {
+      setMenuError(menuResult.error.message)
+      setError(`Gagal memuat menu: ${menuResult.error.message}`)
+    }
     else setMenu((menuResult.data || []) as MenuItem[])
     if (unitResult.error) setError(prev => [prev, `Gagal memuat unit: ${unitResult.error.message}`].filter(Boolean).join(' · '))
     else {
@@ -862,6 +884,40 @@ function SalesModule({ profile }: { profile: Profile | null }) {
   }
 
   useEffect(() => { void loadSalesData() }, [profile?.unit_id])
+
+  useEffect(() => {
+    let current = true
+    if (!KITCHEN_ORDER_BACKEND_READY || !selectedUnit) {
+      setActiveKitchenOrders([])
+      setKitchenOrdersLoading(false)
+      setKitchenOrdersError('')
+      return
+    }
+    setKitchenOrdersLoading(true)
+    setKitchenOrdersError('')
+    listKitchenQueue(selectedUnit).then(rows => {
+      if (current) setActiveKitchenOrders(rows)
+    }).catch(() => {
+      if (current) {
+        setActiveKitchenOrders([])
+        setKitchenOrdersError('Order aktif belum dapat dimuat. Coba muat ulang setelah memeriksa koneksi.')
+      }
+    }).finally(() => {
+      if (current) setKitchenOrdersLoading(false)
+    })
+    return () => { current = false }
+  }, [selectedUnit])
+
+  async function reloadKitchenOrders() {
+    if (!KITCHEN_ORDER_BACKEND_READY || !selectedUnit) return
+    setKitchenOrdersLoading(true)
+    setKitchenOrdersError('')
+    try { setActiveKitchenOrders(await listKitchenQueue(selectedUnit)) }
+    catch {
+      setActiveKitchenOrders([])
+      setKitchenOrdersError('Order aktif belum dapat dimuat. Coba muat ulang setelah memeriksa koneksi.')
+    } finally { setKitchenOrdersLoading(false) }
+  }
 
   function addItem(item: MenuItem) {
     setCart(current => {
@@ -971,6 +1027,7 @@ function SalesModule({ profile }: { profile: Profile | null }) {
         </div>
       </form>
     </div>
+    <KitchenOrderComposer menu={menu} unitId={selectedUnit} unitName={activeUnit?.name || ''} menuLoading={loading} menuError={menuError} backendReady={KITCHEN_ORDER_BACKEND_READY} activeOrders={activeKitchenOrders} ordersLoading={kitchenOrdersLoading} ordersError={kitchenOrdersError} onRefreshOrders={reloadKitchenOrders} />
   </div>
 }
 
