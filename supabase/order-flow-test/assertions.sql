@@ -285,9 +285,9 @@ begin
     cross join lateral jsonb_array_elements(q.items) i
     where q.order_id = v_root
       and i->>'menu_name_snapshot' = 'Fixture Menu'
-      and i->>'quantity' = '2'
-      and i->>'unit_price' = '100.00'
-      and i->>'line_total' = '200.00'
+      and (i->>'quantity')::numeric = 2
+      and (i->>'unit_price')::numeric = 100
+      and (i->>'line_total')::numeric = 200
       and i->>'item_notes' = 'fixture'
       and i->>'preparation_status' = 'ready'
       and i->>'is_prepared' = 'true'
