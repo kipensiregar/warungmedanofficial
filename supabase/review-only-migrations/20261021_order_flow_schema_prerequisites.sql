@@ -67,10 +67,15 @@ create index if not exists kitchen_order_items_order_id_idx
 
 commit;
 
--- Manual rollback, only after checking application dependencies:
+-- Manual rollback only after stopping RPC callers and verifying data impact.
+-- The first two indexes are created by this draft and may be dropped if no
+-- application depends on them. kitchen_order_items_order_id_idx already exists
+-- in Production; CREATE INDEX IF NOT EXISTS is a no-op for it, so do not drop it.
+-- Dropping these columns loses idempotency history, takeaway labels, and item
+-- preparation states written after deployment; archive/retain them unless that
+-- loss is explicitly accepted.
 -- DROP INDEX public.kitchen_orders_one_open_dine_in_root;
 -- DROP INDEX public.kitchen_orders_unit_payment_created_idx;
--- DROP INDEX public.kitchen_order_items_order_id_idx;
 -- ALTER TABLE public.kitchen_orders DROP COLUMN request_payload_hash;
 -- ALTER TABLE public.kitchen_orders DROP COLUMN customer_label;
 -- ALTER TABLE public.kitchen_order_items DROP COLUMN preparation_status;

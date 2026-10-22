@@ -7,6 +7,8 @@ declare
   v_oid oid;
   v_acl aclitem[];
   v_argument_names text[];
+  v_owner text;
+  v_owner_bypasses_rls boolean;
 begin
   foreach v_signature in array array[
     'public.create_kitchen_order(uuid,uuid,text,text,text,jsonb)',
@@ -31,6 +33,11 @@ begin
     end if;
     if not (select prosecdef from pg_proc where oid = v_oid) then
       raise exception 'RPC is not SECURITY DEFINER: %', v_signature;
+    end if;
+    select r.rolname,r.rolbypassrls into v_owner,v_owner_bypasses_rls
+    from pg_proc p join pg_roles r on r.oid=p.proowner where p.oid=v_oid;
+    if v_owner <> 'postgres' or not coalesce(v_owner_bypasses_rls,false) then
+      raise exception 'RPC owner must be postgres with BYPASSRLS: % (owner %, bypass %)', v_signature,v_owner,v_owner_bypasses_rls;
     end if;
     select proargnames[1:pronargs] into v_argument_names from pg_proc where oid = v_oid;
     if v_signature like '%create_kitchen_order%' and v_argument_names <> array[

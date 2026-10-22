@@ -259,6 +259,10 @@ begin
 end
 $function$;
 
+alter function public.create_kitchen_order(uuid,uuid,text,text,text,jsonb) owner to postgres;
+alter function public.append_kitchen_round(uuid,uuid,jsonb) owner to postgres;
+alter function public.set_kitchen_item_preparation(uuid,text) owner to postgres;
+alter function public.list_kitchen_orders(uuid) owner to postgres;
 revoke all on function public.create_kitchen_order(uuid,uuid,text,text,text,jsonb) from public,anon,authenticated;
 revoke all on function public.append_kitchen_round(uuid,uuid,jsonb) from public,anon,authenticated;
 revoke all on function public.set_kitchen_item_preparation(uuid,text) from public,anon,authenticated;
