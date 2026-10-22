@@ -151,6 +151,18 @@ begin
   end;
   if not v_unit_denied then raise exception 'Cashier could create an order for another unit'; end if;
 
+  begin
+    perform public.create_kitchen_order(
+      '40000000-0000-0000-0000-000000000005',
+      '10000000-0000-0000-0000-000000000001',
+      'dine_in', 'T-2', null,
+      '[{"menu_item_id":"30000000-0000-0000-0000-000000000001","quantity":1,"item_notes":null},{"menu_item_id":"30000000-0000-0000-0000-000000000099","quantity":1,"item_notes":null}]'::jsonb
+    );
+  exception when others then
+    if sqlerrm = 'MENU_NOT_ACTIVE' then v_conflict_raised := true; else raise; end if;
+  end;
+  if not v_conflict_raised then raise exception 'Invalid item unexpectedly succeeded'; end if;
+
   v_result := public.create_kitchen_order(
     '40000000-0000-0000-0000-000000000003',
     '10000000-0000-0000-0000-000000000001',
@@ -167,6 +179,9 @@ do $create_row_checks$
 begin
   if (select count(*) from public.kitchen_orders where client_request_id = '40000000-0000-0000-0000-000000000001') <> 1 then
     raise exception 'Create retry produced duplicate headers';
+  end if;
+  if exists (select 1 from public.kitchen_orders where client_request_id = '40000000-0000-0000-0000-000000000005') then
+    raise exception 'Failed create left a partial order header';
   end if;
   if (select unit_price from public.kitchen_order_items where order_id = current_setting('order_flow_test.root_id')::uuid) <> 100.00 then
     raise exception 'Initial price snapshot is incorrect';
@@ -213,6 +228,17 @@ begin
     if sqlerrm = 'IDEMPOTENCY_CONFLICT' then v_conflict_raised := true; else raise; end if;
   end;
   if not v_conflict_raised then raise exception 'Changed append reused the idempotency key'; end if;
+
+  v_conflict_raised := false;
+  begin
+    perform public.append_kitchen_round(
+      '40000000-0000-0000-0000-000000000006', v_root,
+      '[{"menu_item_id":"30000000-0000-0000-0000-000000000001","quantity":1,"item_notes":null},{"menu_item_id":"30000000-0000-0000-0000-000000000099","quantity":1,"item_notes":null}]'::jsonb
+    );
+  exception when others then
+    if sqlerrm = 'MENU_NOT_ACTIVE' then v_conflict_raised := true; else raise; end if;
+  end;
+  if not v_conflict_raised then raise exception 'Invalid append item unexpectedly succeeded'; end if;
 end
 $round_checks$;
 
@@ -226,7 +252,7 @@ begin
     raise exception 'Append did not snapshot the current menu price';
   end if;
   if (select count(*) from public.kitchen_orders where parent_order_id = v_root) <> 1 then
-    raise exception 'Append retry produced duplicate round headers';
+    raise exception 'Append retry or failed append changed round count';
   end if;
   perform set_config('order_flow_test.item_id', (
     select id::text from public.kitchen_order_items where order_id = v_root limit 1
@@ -253,6 +279,19 @@ begin
   select count(*) into v_order_count
   from public.list_kitchen_orders('10000000-0000-0000-0000-000000000001');
   if v_order_count <> 3 then raise exception 'Queue list did not return all unpaid fixture orders and rounds'; end if;
+
+  if not exists (
+    select 1 from public.list_kitchen_orders('10000000-0000-0000-0000-000000000001') q
+    cross join lateral jsonb_array_elements(q.items) i
+    where q.order_id = v_root
+      and i->>'menu_name_snapshot' = 'Fixture Menu'
+      and i->>'quantity' = '2'
+      and i->>'unit_price' = '100.00'
+      and i->>'line_total' = '200.00'
+      and i->>'item_notes' = 'fixture'
+      and i->>'preparation_status' = 'ready'
+      and i->>'is_prepared' = 'true'
+  ) then raise exception 'Queue RPC item payload differs from cashier/kitchen client contract'; end if;
 end
 $kitchen_checks$;
 
